@@ -15,18 +15,22 @@ internal static class TrampolineHelpers
 
     private static Type GetFixedSizeStructType(int size)
     {
-        if (_fixedStructCache.TryGetValue(size, out var result))
+        // Trampolines are generated on whichever thread first needs one, and defining the same type twice throws
+        lock (_fixedStructCache)
         {
-            return result;
+            if (_fixedStructCache.TryGetValue(size, out var result))
+            {
+                return result;
+            }
+
+            _fixedStructAssembly ??= AssemblyBuilder.DefineDynamicAssembly(new AssemblyName("FixedSizeStructAssembly"), AssemblyBuilderAccess.Run);
+            _fixedStructModuleBuilder ??= _fixedStructAssembly.DefineDynamicModule("FixedSizeStructAssembly");
+
+            var tb = _fixedStructModuleBuilder.DefineType($"IL2CPPDetour_FixedSizeStruct_{size}b", TypeAttributes.ExplicitLayout, typeof(ValueType), size);
+
+            var type = tb.CreateType();
+            return _fixedStructCache[size] = type;
         }
-
-        _fixedStructAssembly ??= AssemblyBuilder.DefineDynamicAssembly(new AssemblyName("FixedSizeStructAssembly"), AssemblyBuilderAccess.Run);
-        _fixedStructModuleBuilder ??= _fixedStructAssembly.DefineDynamicModule("FixedSizeStructAssembly");
-
-        var tb = _fixedStructModuleBuilder.DefineType($"IL2CPPDetour_FixedSizeStruct_{size}b", TypeAttributes.ExplicitLayout, typeof(ValueType), size);
-
-        var type = tb.CreateType();
-        return _fixedStructCache[size] = type;
     }
 
     internal static int ValueSize(Type managedType)

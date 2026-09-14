@@ -300,9 +300,27 @@ internal unsafe class Il2CppDetourMethodPatcher : MethodPatcher
                 continue;
             }
 
-            il.Emit(OpCodes.Ldarg_S, i + paramStartIndex);
-            il.Emit(OpCodes.Ldloc, indirectVariables[i]);
             var directType = managedParams[i].GetElementType();
+            il.Emit(OpCodes.Ldarg_S, i + paramStartIndex);
+
+            if (IsWrappedValueType(directType))
+            {
+                // The managed method was handed a boxed copy, since a wrapped value type cannot alias the
+                // caller's storage; copy the box back over that storage, the same way a returned struct is
+                // copied into the caller's return buffer below.
+                uint align = 0;
+                var valueSize = IL2CPP.il2cpp_class_value_size(
+                    Il2CppClassPointerStore.GetNativeClassPointer(directType), ref align);
+
+                il.Emit(OpCodes.Ldloc, indirectVariables[i]);
+                il.Emit(OpCodes.Call, ObjectBaseToPtrNotNullMethodInfo);
+                EmitUnbox(il);
+                il.Emit(OpCodes.Ldc_I4, valueSize);
+                il.Emit(OpCodes.Cpblk);
+                continue;
+            }
+
+            il.Emit(OpCodes.Ldloc, indirectVariables[i]);
             EmitConvertManagedTypeToIL2CPP(il, directType);
             il.Emit(StIndOpcodes.TryGetValue(directType, out var stindOpCodde) ? stindOpCodde : OpCodes.Stind_I);
         }
@@ -463,11 +481,30 @@ internal unsafe class Il2CppDetourMethodPatcher : MethodPatcher
         if (managedParamType.IsByRef)
         {
             var directType = managedParamType.GetElementType();
-            // blittable value type pointer, note that ref to boxed Il2CppSystem.ValueType wrapper is still not handled
+            // blittable value type pointer, it is already storage of the right shape and is passed straight through
             if (directType.IsValueType)
                 return;
 
-            // TODO: directType being Il2CppSystem.ValueType is not handled yet (but it's not that common in games). Implement when needed.
+            if (IsWrappedValueType(directType))
+            {
+                // A value type that isn't blittable is wrapped in a class, so the managed method has no way to
+                // alias the caller's storage. Box a copy of it on the way in; GenerateNativeToManagedTrampoline
+                // copies that box back over the caller's storage once the method has returned. Without this the
+                // pointer is read as though it were an object reference, which is neither the caller's value nor
+                // the right size.
+                var storage = il.DeclareLocal(typeof(IntPtr));
+
+                il.Emit(OpCodes.Stloc, storage);
+                EmitBoxWrappedValueType(il, directType, () => il.Emit(OpCodes.Ldloc, storage));
+
+                variable = il.DeclareLocal(directType);
+
+                HandleTypeConversion(directType);
+
+                il.Emit(OpCodes.Stloc, variable);
+                il.Emit(OpCodes.Ldloca, variable);
+                return;
+            }
 
             variable = il.DeclareLocal(directType);
 

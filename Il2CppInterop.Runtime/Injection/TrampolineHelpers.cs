@@ -2,6 +2,7 @@ using System;
 using System.Collections.Generic;
 using System.Reflection;
 using System.Reflection.Emit;
+using System.Runtime.InteropServices;
 using Il2CppInterop.Runtime.InteropTypes;
 
 namespace Il2CppInterop.Runtime.Injection;
@@ -28,6 +29,32 @@ internal static class TrampolineHelpers
         return _fixedStructCache[size] = type;
     }
 
+    internal static int ValueSize(Type managedType)
+    {
+        uint align = 0;
+        return IL2CPP.il2cpp_class_value_size(Il2CppClassPointerStore.GetNativeClassPointer(managedType), ref align);
+    }
+
+    // x86 passes every struct on the stack. Win64 passes structs of 1, 2, 4 or 8 bytes in a register and the
+    // rest through a pointer, other 64 bit ABIs stay pointers.
+    internal static bool IsPassedByValue(Type managedType)
+    {
+        if (!managedType.IsSubclassOf(typeof(Il2CppSystem.ValueType)))
+            return false;
+        if (!Environment.Is64BitProcess)
+            return true;
+        if (!RuntimeInformation.IsOSPlatform(OSPlatform.Windows))
+            return false;
+        var size = ValueSize(managedType);
+        return size == 1 || size == 2 || size == 4 || size == 8;
+    }
+
+    // A struct wrapper not returned in a register comes back through a caller allocated buffer passed as the first argument
+    internal static bool NeedsReturnBuffer(Type returnType)
+    {
+        return returnType.IsSubclassOf(typeof(Il2CppSystem.ValueType)) && !IsPassedByValue(returnType);
+    }
+
     internal static Type NativeType(this Type managedType)
     {
         if (managedType.IsByRef)
@@ -40,19 +67,16 @@ internal static class TrampolineHelpers
                 return typeof(byte).MakeByRefType();
             }
 
-            if (directType == typeof(string) || directType.IsSubclassOf(typeof(Il2CppObjectBase)))
+            if (directType == typeof(string) || directType.IsSubclassOf(typeof(Il2CppObjectBase)) || directType.IsInterface)
             {
                 return typeof(IntPtr*);
             }
         }
-        else if (managedType.IsSubclassOf(typeof(Il2CppSystem.ValueType)) && !Environment.Is64BitProcess)
+        else if (managedType.IsSubclassOf(typeof(Il2CppSystem.ValueType)) && IsPassedByValue(managedType))
         {
-            // Struct that's passed on the stack => handle as general struct
-            uint align = 0;
-            var fixedSize = IL2CPP.il2cpp_class_value_size(Il2CppClassPointerStore.GetNativeClassPointer(managedType), ref align);
-            return GetFixedSizeStructType(fixedSize);
+            return GetFixedSizeStructType(ValueSize(managedType));
         }
-        else if (managedType == typeof(string) || managedType.IsSubclassOf(typeof(Il2CppObjectBase))) // General reference type
+        else if (managedType == typeof(string) || managedType.IsSubclassOf(typeof(Il2CppObjectBase)) || managedType.IsInterface) // General reference type
         {
             return typeof(IntPtr);
         }

@@ -43,6 +43,40 @@ public static class XrefScannerLowLevel
         }
     }
 
+    /// <summary>
+    /// Direct near call targets only, so a result is always a callee rather than a jump table entry or a
+    /// rip-relative data reference. A function starting with an unconditional jmp is a thunk, so step through it.
+    /// </summary>
+    public static IEnumerable<IntPtr> CallTargets(IntPtr codeStart)
+    {
+        for (var hops = 0; hops < 8; hops++)
+        {
+            var thunkDecoder = XrefScanner.DecoderForAddress(codeStart, 16);
+            thunkDecoder.Decode(out var first);
+            if (thunkDecoder.LastError != DecoderError.None) break;
+            if (first.Mnemonic != Mnemonic.Jmp || first.Op0Kind != OpKind.NearBranch64) break;
+            codeStart = (IntPtr)first.NearBranch64;
+        }
+
+        return CallTargetsImpl(XrefScanner.DecoderForAddress(codeStart));
+    }
+
+    private static IEnumerable<IntPtr> CallTargetsImpl(Decoder decoder)
+    {
+        while (true)
+        {
+            decoder.Decode(out var instruction);
+            if (decoder.LastError == DecoderError.NoMoreBytes) yield break;
+
+            // 0xcc - padding after most functions
+            if (instruction.Mnemonic == Mnemonic.Int3) yield break;
+            if (instruction.FlowControl == FlowControl.Return) yield break;
+
+            if (instruction.Mnemonic == Mnemonic.Call && instruction.Op0Kind == OpKind.NearBranch64)
+                yield return (IntPtr)instruction.NearBranch64;
+        }
+    }
+
     public static IEnumerable<IntPtr> CallAndIndirectTargets(IntPtr pointer)
     {
         return CallAndIndirectTargetsImpl(XrefScanner.DecoderForAddress(pointer, 1024 * 1024));

@@ -53,6 +53,6 @@ public static class TypeReferenceEx
     // See https://github.com/BepInEx/Il2CppInterop/issues/211 for the discussion
     public static bool IsValueType(this ITypeDescriptor type)
     {
-        return type.IsValueType && type.FullName != "System.Enum";
+        return type.TryGetIsValueType(type.ContextModule!.RuntimeContext) == true && type.FullName != "System.Enum";
     }
 }

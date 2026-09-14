@@ -23,6 +23,7 @@ public static class Pass79UnstripTypes
             {
                 var newAssembly = new AssemblyDefinition(unityAssembly.Name, unityAssembly.Version);
                 newAssembly.Modules.Add(new ModuleDefinition(unityAssembly.ManifestModule!.Name));
+                context.RuntimeContext.AddAssembly(newAssembly);
                 var newContext = new AssemblyRewriteContext(context, unityAssembly,
                     newAssembly);
                 context.AddAssemblyContext(unityAssembly.Name!, newContext);

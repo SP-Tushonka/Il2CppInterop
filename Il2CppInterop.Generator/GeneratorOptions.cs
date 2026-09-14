@@ -22,6 +22,9 @@ public class GeneratorOptions
     public bool PassthroughNames { get; set; }
     public bool Parallel { get; set; } = true;
 
+    // SPT addition, wrappers of sealed il2cpp classes are emitted unsealed so injected types can derive from them
+    public bool UnsealClasses { get; set; } = true;
+
     public PrefixMode Il2CppPrefixMode { get; set; } = PrefixMode.OptIn;
     public HashSet<string> NamespacesAndAssembliesToPrefix { get; } =
         new() { "System", "mscorlib", "Microsoft", "Mono", "I18N" };

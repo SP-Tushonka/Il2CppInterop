@@ -15,7 +15,13 @@ public static class Il2CppInteropUtils
             if (opCode != OpCodes.Ldsfld) continue;
 
             var fieldInfo = methodModule.ResolveField((int)opArg, method.DeclaringType.GenericTypeArguments, method.GetGenericArguments());
-            if (fieldInfo?.FieldType != typeof(IntPtr)) continue;
+            if (fieldInfo == null) continue;
+
+            // Accessors load the cached offset field, the field info pointer lives in the NativeFieldInfoPtr_ field of the same name
+            if (prefix == "NativeFieldInfoPtr_" && fieldInfo.Name.StartsWith("NativeFieldOffset_"))
+                return fieldInfo.DeclaringType!.GetField(prefix + fieldInfo.Name.Substring("NativeFieldOffset_".Length), BindingFlags.Static | BindingFlags.NonPublic);
+
+            if (fieldInfo.FieldType != typeof(IntPtr)) continue;
 
             if (fieldInfo.Name.StartsWith(prefix)) return fieldInfo;
 

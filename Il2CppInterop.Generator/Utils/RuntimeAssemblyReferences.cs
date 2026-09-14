@@ -79,6 +79,7 @@ public class RuntimeAssemblyReferences
         : IL2CPP_FieldWriteWbarrierStub.Value;
 
     public TypeSignature Il2CppObjectBase { get; private set; }
+    public TypeSignature IIl2CppObjectBase { get; private set; }
     public TypeSignature Il2CppObjectPool { get; private set; }
     public TypeSignature Il2CppStringArray { get; private set; }
     public TypeSignature Il2CppArrayBase { get; private set; }
@@ -116,6 +117,9 @@ public class RuntimeAssemblyReferences
         Il2CppObjectBase =
             new TypeReference(Module, assemblyRef, "Il2CppInterop.Runtime.InteropTypes", "Il2CppObjectBase").ToTypeSignature();
 
+        IIl2CppObjectBase =
+            new TypeReference(Module, assemblyRef, "Il2CppInterop.Runtime.InteropTypes", "IIl2CppObjectBase").ToTypeSignature();
+
         Il2CppObjectPool = new TypeReference(Module, assemblyRef, "Il2CppInterop.Runtime.Runtime", "Il2CppObjectPool").ToTypeSignature();
 
         Il2CppStringArray = new TypeReference(Module, assemblyRef, "Il2CppInterop.Runtime.InteropTypes.Arrays", "Il2CppStringArray").ToTypeSignature();
@@ -142,6 +146,7 @@ public class RuntimeAssemblyReferences
         Il2CppException = new TypeReference(Module, assemblyRef, "Il2CppInterop.Runtime", "Il2CppException").ToTypeSignature();
 
         allTypes["Il2CppInterop.Runtime.InteropTypes.Il2CppObjectBase"] = Il2CppObjectBase;
+        allTypes["Il2CppInterop.Runtime.InteropTypes.IIl2CppObjectBase"] = IIl2CppObjectBase;
         allTypes["Il2CppInterop.Runtime.Runtime.Il2CppObjectPool"] = Il2CppObjectPool;
         allTypes["Il2CppInterop.Runtime.InteropTypes.Arrays.Il2CppArrayBase"] = nonGenericIl2CppArrayBase;
         allTypes["Il2CppInterop.Runtime.InteropTypes.Arrays.Il2CppArrayBase<T>"] = genericIl2CppArrayBase;
@@ -266,7 +271,7 @@ public class RuntimeAssemblyReferences
         Il2CppObjectBase_Cast = new Lazy<IMethodDefOrRef>(() =>
         {
             var gp0 = new GenericParameterSignature(GenericParameterType.Method, 0);
-            var signature = MethodSignature.CreateInstance(gp0, 1);
+            var signature = MethodSignature.CreateInstance(gp0, 1, []);
             var mr = new MemberReference(ResolveType("Il2CppInterop.Runtime.InteropTypes.Il2CppObjectBase").ToTypeDefOrRef(), "Cast", signature);
             return mr;
         });
@@ -274,7 +279,7 @@ public class RuntimeAssemblyReferences
         Il2CppObjectBase_TryCast = new Lazy<IMethodDefOrRef>(() =>
         {
             var gp0 = new GenericParameterSignature(GenericParameterType.Method, 0);
-            var signature = MethodSignature.CreateInstance(gp0, 1);
+            var signature = MethodSignature.CreateInstance(gp0, 1, []);
             var mr = new MemberReference(ResolveType("Il2CppInterop.Runtime.InteropTypes.Il2CppObjectBase").ToTypeDefOrRef(), "TryCast", signature);
             return mr;
         });
@@ -282,7 +287,7 @@ public class RuntimeAssemblyReferences
         Il2CppObjectPool_Get = new Lazy<IMethodDefOrRef>(() =>
         {
             var gp0 = new GenericParameterSignature(GenericParameterType.Method, 0);
-            var signature = MethodSignature.CreateStatic(gp0, 1, ResolveType("System.IntPtr"));
+            var signature = MethodSignature.CreateStatic(gp0, 1, [ResolveType("System.IntPtr")]);
             var mr = new MemberReference(ResolveType("Il2CppInterop.Runtime.Runtime.Il2CppObjectPool").ToTypeDefOrRef(), "Get", signature);
             return mr;
         });
@@ -290,7 +295,7 @@ public class RuntimeAssemblyReferences
         IL2CPP_ResolveICall = new Lazy<IMethodDefOrRef>(() =>
         {
             var gp0 = new GenericParameterSignature(GenericParameterType.Method, 0);
-            var signature = MethodSignature.CreateStatic(gp0, 1, ResolveType("System.String"));
+            var signature = MethodSignature.CreateStatic(gp0, 1, [ResolveType("System.String")]);
             var mr = new MemberReference(ResolveType("Il2CppInterop.Runtime.IL2CPP").ToTypeDefOrRef(), "ResolveICall", signature);
             return mr;
         });
@@ -467,7 +472,7 @@ public class RuntimeAssemblyReferences
         IL2CPP_PointerToValueGeneric = new Lazy<IMethodDefOrRef>(() =>
         {
             var gp0 = new GenericParameterSignature(GenericParameterType.Method, 0);
-            var signature = MethodSignature.CreateStatic(gp0, 1, ResolveType("System.IntPtr"), ResolveType("System.Boolean"), ResolveType("System.Boolean"));
+            var signature = MethodSignature.CreateStatic(gp0, 1, [ResolveType("System.IntPtr"), ResolveType("System.Boolean"), ResolveType("System.Boolean")]);
             var mr = new MemberReference(ResolveType("Il2CppInterop.Runtime.IL2CPP").ToTypeDefOrRef(), "PointerToValueGeneric", signature);
             return mr;
         });
@@ -475,7 +480,7 @@ public class RuntimeAssemblyReferences
         IL2CPP_RenderTypeName = new Lazy<IMethodDefOrRef>(() =>
         {
             var gp0 = new GenericParameterSignature(GenericParameterType.Method, 0);
-            var signature = MethodSignature.CreateStatic(ResolveType("System.String"), 1, ResolveType("System.Boolean"));
+            var signature = MethodSignature.CreateStatic(ResolveType("System.String"), 1, [ResolveType("System.Boolean")]);
             var mr = new MemberReference(ResolveType("Il2CppInterop.Runtime.IL2CPP").ToTypeDefOrRef(), "RenderTypeName", signature);
             return mr;
         });
@@ -508,7 +513,7 @@ public class RuntimeAssemblyReferences
             var declaringTypeRef = RuntimeReflectionHelper;
             var returnTypeRef = Module.DefaultImporter.ImportType(globalCtx.GetAssemblyByName("mscorlib").NewAssembly.ManifestModule!
                 .GetType("Il2CppSystem.RuntimeTypeHandle"));
-            var signature = MethodSignature.CreateStatic(returnTypeRef.ToTypeSignature(), 1);
+            var signature = MethodSignature.CreateStatic(returnTypeRef.ToTypeSignature(), 1, []);
             var methodReference = new MemberReference(declaringTypeRef.ToTypeDefOrRef(), "GetRuntimeTypeHandle", signature);
             return Module.DefaultImporter.ImportMethod(methodReference);
         });

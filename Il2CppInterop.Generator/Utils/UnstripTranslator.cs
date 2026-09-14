@@ -9,6 +9,8 @@ using AsmResolver.PE.DotNet.Metadata.Tables;
 using Il2CppInterop.Generator.Contexts;
 using Il2CppInterop.Generator.Passes;
 
+using Il2CppInterop.Generator.Extensions;
+
 namespace Il2CppInterop.Generator.Utils;
 
 public static class UnstripTranslator
@@ -201,6 +203,28 @@ public static class UnstripTranslator
 
                 var methodArg = (IMethodDescriptor)bodyInstruction.Operand;
                 var useSystemCorlibType = methodArg.Signature?.HasThis ?? true;
+
+                var constrainedToClrStruct = targetBuilder.Count > 0
+                    && targetBuilder[targetBuilder.Count - 1].OpCode == OpCodes.Constrained
+                    && targetBuilder[targetBuilder.Count - 1].Operand is ITypeDefOrRef constrainedOperand && constrainedOperand.IsValueType();
+                if (constrainedToClrStruct && methodArg.Signature != null && methodArg.Signature.HasThis && methodArg.DeclaringType?.FullName is "System.Object" or "System.ValueType")
+                {
+                    // The receiver is a plain CLR struct, so the call has to stay in the CLR corlib
+                    var objectRef = imports.Module.Object().ToTypeDefOrRef();
+                    IMethodDescriptor? clrMethod = methodArg.Name?.Value switch
+                    {
+                        "GetHashCode" when methodArg.Signature.ParameterTypes.Count == 0 => ReferenceCreator.CreateInstanceMethodReference("GetHashCode", imports.Module.Int(), objectRef),
+                        "ToString" when methodArg.Signature.ParameterTypes.Count == 0 => ReferenceCreator.CreateInstanceMethodReference("ToString", imports.Module.String(), objectRef),
+                        "Equals" when methodArg.Signature.ParameterTypes.Count == 1 => ReferenceCreator.CreateInstanceMethodReference("Equals", imports.Module.Bool(), objectRef, imports.Module.Object()),
+                        _ => null,
+                    };
+                    if (clrMethod == null)
+                        return false;
+
+                    var clrInstruction = targetBuilder.Add(bodyInstruction.OpCode, imports.Module.DefaultImporter.ImportMethod(clrMethod));
+                    instructionMap.Add(bodyInstruction, clrInstruction);
+                    continue;
+                }
                 var methodDeclarer =
                     Pass80UnstripMethods.ResolveTypeInNewAssemblies(globalContext, methodArg.DeclaringType?.ToTypeSignature(), imports, useSystemCorlibType);
                 if (methodDeclarer == null)
@@ -212,8 +236,8 @@ public static class UnstripTranslator
                     return false;
 
                 var newMethodSignature = methodArg.Signature!.HasThis
-                    ? MethodSignature.CreateInstance(newReturnType, methodArg.Signature.GenericParameterCount)
-                    : MethodSignature.CreateStatic(newReturnType, methodArg.Signature.GenericParameterCount);
+                    ? MethodSignature.CreateInstance(newReturnType, methodArg.Signature.GenericParameterCount, [])
+                    : MethodSignature.CreateStatic(newReturnType, methodArg.Signature.GenericParameterCount, []);
                 foreach (var methodArgParameter in methodArg.Signature.ParameterTypes)
                 {
                     var newParamType = Pass80UnstripMethods.ResolveTypeInNewAssemblies(globalContext,
@@ -224,7 +248,16 @@ public static class UnstripTranslator
                     newMethodSignature.ParameterTypes.Add(newParamType);
                 }
 
-                var memberReference = new MemberReference(methodDeclarer.ToTypeDefOrRef(), methodArg.Name, newMethodSignature);
+                // The JIT faults on constrained. over a CLR struct followed by a call into an il2cpp class
+                if (constrainedToClrStruct && methodArg.Signature.HasThis && !methodDeclarer.IsValueType())
+                    return false;
+
+                // The generator renames Object.GetType to keep System.Type.GetType reachable
+                var methodName = methodArg.Name;
+                if (methodArg.Signature.HasThis && methodArg.Name == "GetType" && methodArg.Signature.ParameterTypes.Count == 0 && methodArg.DeclaringType?.FullName == "System.Object")
+                    methodName = "GetIl2CppType";
+
+                var memberReference = new MemberReference(methodDeclarer.ToTypeDefOrRef(), methodName, newMethodSignature);
 
                 IMethodDescriptor newMethod;
                 if (methodArg is MethodSpecification genericMethod)
@@ -265,13 +298,13 @@ public static class UnstripTranslator
                     // Castclass is only used for reference types.
                     // Both can be translated to Il2CppObjectBase.Cast<T>().
                     var newInstruction = targetBuilder.Add(OpCodes.Call,
-                        imports.Module.DefaultImporter.ImportMethod(imports.Il2CppObjectBase_Cast.Value.MakeGenericInstanceMethod(targetType)));
+                        imports.Module.DefaultImporter.ImportMethod(imports.Il2CppObjectBase_Cast.Value.MakeGenericInstanceMethod([targetType])));
                     instructionMap.Add(bodyInstruction, newInstruction);
                 }
                 else if (bodyInstruction.OpCode == OpCodes.Isinst && !targetType.IsValueType)
                 {
                     var newInstruction = targetBuilder.Add(OpCodes.Call,
-                        imports.Module.DefaultImporter.ImportMethod(imports.Il2CppObjectBase_TryCast.Value.MakeGenericInstanceMethod(targetType)));
+                        imports.Module.DefaultImporter.ImportMethod(imports.Il2CppObjectBase_TryCast.Value.MakeGenericInstanceMethod([targetType])));
                     instructionMap.Add(bodyInstruction, newInstruction);
                 }
                 else if (bodyInstruction.OpCode == OpCodes.Newarr)
@@ -335,7 +368,7 @@ public static class UnstripTranslator
                                 return false;
 
                             var newInstruction = targetBuilder.Add(OpCodes.Call,
-                                imports.Module.DefaultImporter.ImportMethod(imports.Il2CppSystemRuntimeTypeHandleGetRuntimeTypeHandle.Value.MakeGenericInstanceMethod(targetTok)));
+                                imports.Module.DefaultImporter.ImportMethod(imports.Il2CppSystemRuntimeTypeHandleGetRuntimeTypeHandle.Value.MakeGenericInstanceMethod([targetTok])));
                             instructionMap.Add(bodyInstruction, newInstruction);
                         }
                         break;

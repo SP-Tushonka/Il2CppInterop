@@ -76,7 +76,7 @@ public class TypeRewriteContext
             var genericTypeRef = new GenericInstanceTypeSignature(
                 AssemblyContext.Imports.Il2CppClassPointerStore.ToTypeDefOrRef(),
                 AssemblyContext.Imports.Il2CppClassPointerStore.IsValueType(),
-                SelfSubstitutedRef.ToTypeSignature());
+                [SelfSubstitutedRef.ToTypeSignature()]);
             ClassPointerFieldRef = ReferenceCreator.CreateFieldReference("NativeClassPtr", AssemblyContext.Imports.Module.IntPtr(),
                 NewType.DeclaringModule.DefaultImporter.ImportType(genericTypeRef.ToTypeDefOrRef()));
         }

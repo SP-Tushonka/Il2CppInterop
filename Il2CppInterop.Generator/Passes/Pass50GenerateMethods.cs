@@ -57,10 +57,11 @@ public static class Pass50GenerateMethods
 
                         bodyBuilder.Add(OpCodes.Ldc_I4_0);
                         bodyBuilder.Add(OpCodes.Conv_I8);
+                        // Non blittable structs are wrapped by classes and travel in reference arrays, so the converted element type decides
                         bodyBuilder.Add(OpCodes.Newobj, imports.Module.DefaultImporter.ImportMethod(originalElementType.FullName switch
                         {
                             "System.String" => imports.Il2CppStringArrayctor_size.Value,
-                            _ when originalElementType.IsValueType() => imports.Il2CppStructArrayctor_size.Get(((GenericInstanceTypeSignature)newParameter.ParameterType).TypeArguments[0]),
+                            _ when ((GenericInstanceTypeSignature)newParameter.ParameterType).TypeArguments[0].IsValueType() => imports.Il2CppStructArrayctor_size.Get(((GenericInstanceTypeSignature)newParameter.ParameterType).TypeArguments[0]),
                             _ => imports.Il2CppRefrenceArrayctor_size.Get(((GenericInstanceTypeSignature)newParameter.ParameterType).TypeArguments[0])
                         }));
                         bodyBuilder.Add(OpCodes.Starg, newParameter);
@@ -82,6 +83,8 @@ public static class Pass50GenerateMethods
                         else if (!originalMethod.IsStatic)
                         {
                             bodyBuilder.Add(OpCodes.Ldarg_0);
+                            if (typeContext.OriginalType.IsInterface)
+                                bodyBuilder.Add(OpCodes.Castclass, imports.Il2CppObjectBase.ToTypeDefOrRef());
                             bodyBuilder.Add(OpCodes.Call, imports.IL2CPP_Il2CppObjectBaseToPtrNotNull.Value);
                             bodyBuilder.Add(OpCodes.Pop);
                         }
@@ -170,7 +173,7 @@ public static class Pass50GenerateMethods
                         else
                         {
                             bodyBuilder.EmitObjectToPointer(originalMethod.Parameters[i].ParameterType, newParam.ParameterType,
-                                methodRewriteContext.DeclaringType, argOffset + i, false, true, true, false, out var refVar);
+                                methodRewriteContext.DeclaringType, argOffset + i, false, true, true, true, out var refVar);
                             if (refVar != null)
                                 byRefParams.Add((i, refVar));
                         }
@@ -178,17 +181,19 @@ public static class Pass50GenerateMethods
 
                     }
 
-                    if (!originalMethod.DeclaringType!.IsSealed && !originalMethod.IsFinal &&
+                    if (!originalMethod.DeclaringType!.IsSealed && (methodRewriteContext.InterfaceMethodInfoPointerField != null || !originalMethod.IsFinal) &&
                         ((originalMethod.IsVirtual && !originalMethod.DeclaringType.IsValueType()) || originalMethod.IsAbstract))
                     {
                         bodyBuilder.Add(OpCodes.Ldarg_0);
+                        if (typeContext.OriginalType.IsInterface)
+                            bodyBuilder.Add(OpCodes.Castclass, imports.Il2CppObjectBase.ToTypeDefOrRef());
                         bodyBuilder.Add(OpCodes.Call, imports.IL2CPP_Il2CppObjectBaseToPtr.Value);
                         if (methodRewriteContext.GenericInstantiationsStoreSelfSubstRef != null)
                             bodyBuilder.Add(OpCodes.Ldsfld,
                                 ReferenceCreator.CreateFieldReference("Pointer", imports.Module.IntPtr(),
                                     methodRewriteContext.GenericInstantiationsStoreSelfSubstMethodRef));
                         else
-                            bodyBuilder.Add(OpCodes.Ldsfld, methodRewriteContext.NonGenericMethodInfoPointerField);
+                            bodyBuilder.Add(OpCodes.Ldsfld, methodRewriteContext.InterfaceMethodInfoPointerField ?? methodRewriteContext.NonGenericMethodInfoPointerField);
                         bodyBuilder.Add(OpCodes.Call, imports.IL2CPP_il2cpp_object_get_virtual_method.Value);
                     }
                     else if (methodRewriteContext.GenericInstantiationsStoreSelfSubstRef != null)
@@ -204,6 +209,8 @@ public static class Pass50GenerateMethods
 
                     if (originalMethod.IsStatic)
                         bodyBuilder.Add(OpCodes.Ldc_I4_0);
+                    else if (typeContext.OriginalType.IsInterface)
+                        bodyBuilder.EmitInterfaceThisToPointer(imports);
                     else
                         bodyBuilder.EmitObjectToPointer(originalMethod.DeclaringType.ToTypeSignature(), newMethod.DeclaringType!.ToTypeSignature(), typeContext, 0,
                             true, false, true, true, out _);

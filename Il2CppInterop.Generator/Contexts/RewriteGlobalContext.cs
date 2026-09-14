@@ -29,6 +29,7 @@ public class RewriteGlobalContext : IDisposable
         UnityAssemblies = unityAssemblies;
 
         Il2CppAssemblyResolver assemblyResolver = new();
+        RuntimeContext = assemblyResolver.Context;
 
         foreach (var sourceAssembly in gameAssemblies.Assemblies)
         {
@@ -39,11 +40,9 @@ public class RewriteGlobalContext : IDisposable
             }
 
             var newAssembly = new AssemblyDefinition(sourceAssembly.Name.UnSystemify(options), sourceAssembly.Version);
+            assemblyResolver.Context.AddAssembly(newAssembly);
             var newModule = new ModuleDefinition(sourceAssembly.ManifestModule?.Name.UnSystemify(options), CorlibReferences.TargetCorlib);
             newAssembly.Modules.Add(newModule);
-
-            newModule.MetadataResolver = new DefaultMetadataResolver(assemblyResolver);
-            assemblyResolver.AddToCache(newAssembly);
 
             var assemblyRewriteContext = new AssemblyRewriteContext(this, sourceAssembly, newAssembly);
             AddAssemblyContext(assemblyName, assemblyRewriteContext);
@@ -51,6 +50,9 @@ public class RewriteGlobalContext : IDisposable
     }
 
     public GeneratorOptions Options { get; }
+
+    // Generated assemblies only resolve each other inside this shared context
+    internal RuntimeContext RuntimeContext { get; }
     public IIl2CppMetadataAccess GameAssemblies { get; }
     public IMetadataAccess UnityAssemblies { get; }
 
@@ -151,19 +153,7 @@ public class RewriteGlobalContext : IDisposable
             foreach (var genericParameter in originalMethod.GenericParameters)
             {
                 var newGenericParameter = new GenericParameter(genericParameter.Name.MakeValidInSource(), genericParameter.Attributes);
-
-                foreach (var constraint in genericParameter.Constraints)
-                {
-                    var newConstraintType = constraint.Constraint != null ? resolve(constraint.Constraint.ToTypeSignature())?.ToTypeDefOrRef() : null;
-                    var newConstraint = new GenericParameterConstraint(newConstraintType);
-
-                    // We don't need to copy custom attributes on constraints for generic parameters because Il2Cpp doesn't support them.
-
-                    newGenericParameter.Constraints.Add(newConstraint);
-                }
-
-                // Similarly, custom attributes on generic parameters are also stripped by Il2Cpp, so we don't need to copy them.
-
+                ConstraintRewriter.Rewrite(genericParameter, newGenericParameter, imports, resolve);
                 paramsMethod.GenericParameters.Add(newGenericParameter);
             }
 

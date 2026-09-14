@@ -107,7 +107,9 @@ public static class Pass10CreateTypedefs
     private static TypeAttributes AdjustAttributes(TypeAttributes typeAttributes)
     {
         typeAttributes |= TypeAttributes.BeforeFieldInit;
-        typeAttributes &= ~(TypeAttributes.Abstract | TypeAttributes.Interface);
+        // Interfaces stay interfaces, Pass50 gives their methods default bodies
+        if ((typeAttributes & TypeAttributes.Interface) == 0)
+            typeAttributes &= ~TypeAttributes.Abstract;
 
         var visibility = typeAttributes & TypeAttributes.VisibilityMask;
         if (visibility == 0 || visibility == TypeAttributes.Public)

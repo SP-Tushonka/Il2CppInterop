@@ -15,7 +15,7 @@ public static class Pass23GeneratePointerConstructors
             foreach (var typeContext in assemblyContext.Types)
             {
                 if (typeContext.ComputedTypeSpecifics == TypeRewriteContext.TypeSpecifics.BlittableStruct ||
-                    typeContext.OriginalType.IsEnum) continue;
+                    typeContext.OriginalType.IsEnum || typeContext.OriginalType.IsInterface) continue;
 
                 var newType = typeContext.NewType;
 
@@ -32,7 +32,7 @@ public static class Pass23GeneratePointerConstructors
                 ctorBody.Add(OpCodes.Ldarg_0);
                 ctorBody.Add(OpCodes.Ldarg_1);
                 ctorBody.Add(OpCodes.Call,
-                    new MemberReference(newType.BaseType, ".ctor", MethodSignature.CreateInstance(assemblyContext.Imports.Module.Void(), assemblyContext.Imports.Module.IntPtr())));
+                    new MemberReference(newType.BaseType, ".ctor", MethodSignature.CreateInstance(assemblyContext.Imports.Module.Void(), [assemblyContext.Imports.Module.IntPtr()])));
                 ctorBody.Add(OpCodes.Ret);
             }
     }

@@ -1,18 +1,22 @@
 ﻿using AsmResolver.DotNet;
-using AsmResolver.IO;
 
 namespace Il2CppInterop.Generator.MetadataAccess;
 
-internal sealed class Il2CppAssemblyResolver : AssemblyResolverBase
+// Owns the runtime context the generated assemblies live in. Nothing outside that set is meant to resolve,
+// so the fallback resolver never finds anything.
+internal sealed class Il2CppAssemblyResolver : IAssemblyResolver
 {
-    public Il2CppAssemblyResolver() : base(new ByteArrayFileService())
+    public RuntimeContext Context { get; }
+
+    public Il2CppAssemblyResolver()
     {
+        Context = new RuntimeContext(Utils.CorlibReferences.TargetRuntime, this);
     }
 
-    protected override string? ProbeRuntimeDirectories(AssemblyDescriptor assembly) => null;
-
-    public void AddToCache(AssemblyDefinition assembly)
+    public ResolutionStatus Resolve(AssemblyDescriptor assembly, ModuleDefinition originModule,
+        out AssemblyDefinition result)
     {
-        AddToCache(assembly, assembly);
+        result = null!;
+        return ResolutionStatus.AssemblyNotFound;
     }
 }

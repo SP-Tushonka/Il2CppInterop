@@ -3,6 +3,7 @@ using Il2CppInterop.Common.XrefScans;
 using Il2CppInterop.Generator.Contexts;
 using Il2CppInterop.Generator.MetadataAccess;
 using Il2CppInterop.Generator.Passes;
+using Il2CppInterop.Generator.Passes.SPT;
 using Il2CppInterop.Generator.Utils;
 using Microsoft.Extensions.Logging;
 
@@ -77,6 +78,11 @@ internal class InteropAssemblyGeneratorRunner : IRunner
             Pass12FillTypedefs.DoPass(rewriteContext);
         }
 
+        using (new TimingCookie("Unsealing classes"))
+        {
+            PassSptUnsealClasses.DoPass(rewriteContext);
+        }
+
         using (new TimingCookie("Filling generic constraints"))
         {
             Pass13FillGenericConstraints.DoPass(rewriteContext);
@@ -122,6 +128,11 @@ internal class InteropAssemblyGeneratorRunner : IRunner
         using (new TimingCookie("Creating IntPtr constructors"))
         {
             Pass23GeneratePointerConstructors.DoPass(rewriteContext);
+        }
+
+        using (new TimingCookie("Creating interface proxies"))
+        {
+            Pass24GenerateInterfaceProxies.DoPass(rewriteContext);
         }
 
         using (new TimingCookie("Creating non-blittable struct constructors"))

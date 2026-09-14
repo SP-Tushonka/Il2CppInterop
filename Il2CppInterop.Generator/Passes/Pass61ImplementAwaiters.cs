@@ -8,6 +8,8 @@ using Il2CppInterop.Common;
 using Il2CppInterop.Generator.Contexts;
 using Microsoft.Extensions.Logging;
 
+using Il2CppInterop.Generator.Extensions;
+
 namespace Il2CppInterop.Generator.Passes;
 
 public static class Pass61ImplementAwaiters

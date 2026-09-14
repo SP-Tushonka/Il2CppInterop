@@ -24,24 +24,24 @@ namespace Il2CppInterop.Runtime.Injection;
 
 public unsafe class Il2CppInterfaceCollection : List<INativeClassStruct>
 {
+    // Managed interface per class pointer, known only when the collection was built from types
+    internal readonly Dictionary<IntPtr, Type> ManagedTypes = new();
+
     public Il2CppInterfaceCollection(IEnumerable<INativeClassStruct> interfaces) : base(interfaces)
     {
     }
 
-    public Il2CppInterfaceCollection(IEnumerable<Type> interfaces) : base(ResolveNativeInterfaces(interfaces))
+    public Il2CppInterfaceCollection(IEnumerable<Type> interfaces)
     {
-    }
-
-    private static IEnumerable<INativeClassStruct> ResolveNativeInterfaces(IEnumerable<Type> interfaces)
-    {
-        return interfaces.Select(it =>
+        foreach (var managedType in interfaces)
         {
-            var classPointer = Il2CppClassPointerStore.GetNativeClassPointer(it);
+            var classPointer = Il2CppClassPointerStore.GetNativeClassPointer(managedType);
             if (classPointer == IntPtr.Zero)
                 throw new ArgumentException(
-                    $"Type {it} doesn't have an IL2CPP class pointer, which means it's not an IL2CPP interface");
-            return UnityVersionHandler.Wrap((Il2CppClass*)classPointer);
-        });
+                    $"Type {managedType} doesn't have an IL2CPP class pointer, which means it's not an IL2CPP interface");
+            Add(UnityVersionHandler.Wrap((Il2CppClass*)classPointer));
+            ManagedTypes[classPointer] = managedType;
+        }
     }
 
     public static implicit operator Il2CppInterfaceCollection(INativeClassStruct[] interfaces)
@@ -167,7 +167,7 @@ public static unsafe partial class ClassInjector
         {
             var interfacesAttribute = type.GetCustomAttribute<Il2CppImplementsAttribute>();
             interfaces = interfacesAttribute?.Interfaces ??
-                         options.InterfacesResolver?.Invoke(type) ?? Array.Empty<Type>();
+                         options.InterfacesResolver?.Invoke(type) ?? DeclaredIl2CppInterfaces(type);
         }
 
         if (type == null)
@@ -204,8 +204,9 @@ public static unsafe partial class ClassInjector
         if (baseClassPointer.IsGeneric)
             throw new ArgumentException($"Base class {baseType} is generic and can't be inherited from");
 
+        // il2cpp compiles calls and casts on a sealed class as direct, so game code never reaches the injected class through it
         if ((baseClassPointer.Flags & Il2CppClassAttributes.TYPE_ATTRIBUTE_SEALED) != 0)
-            throw new ArgumentException($"Base class {baseType} is sealed and can't be inherited from");
+            Logger.Instance.LogWarning("Base class {BaseType} is sealed in il2cpp, game code will not see {Type} through it", baseType, type);
 
         if ((baseClassPointer.Flags & Il2CppClassAttributes.TYPE_ATTRIBUTE_INTERFACE) != 0)
             throw new ArgumentException($"Base class {baseType} is an interface and can't be inherited from");
@@ -435,7 +436,8 @@ public static unsafe partial class ClassInjector
                 parameters[j] = parameterType;
             }
 
-            var monoMethodImplementation = type.GetMethod(methodName, BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.DeclaredOnly, parameters);
+            var monoMethodImplementation = FindBaseInterfaceImplementation(type, baseClassPointer, i, baseMethod.ParametersCount)
+                ?? type.GetMethod(methodName, BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.DeclaredOnly, parameters);
 
             if (monoMethodImplementation != null && monoMethodImplementation.IsAbstract)
             {
@@ -462,13 +464,17 @@ public static unsafe partial class ClassInjector
         for (var i = 0; i < interfaces.Count; i++)
         {
             offsets[i] = index;
+            var managedInterface = interfaces.ManagedTypes.TryGetValue((IntPtr)interfaces[i].ClassPointer, out var knownInterface) ? knownInterface : null;
+            InterfaceMapping? mapping = managedInterface != null && managedInterface.IsAssignableFrom(type) ? type.GetInterfaceMap(managedInterface) : null;
             for (var j = 0; j < interfaces[i].MethodCount; j++)
             {
                 var vTableMethod = UnityVersionHandler.Wrap(interfaces[i].Methods[j]);
                 var methodName = Marshal.PtrToStringUTF8(vTableMethod.Name);
-                if (!infos.TryGetValue((methodName, vTableMethod.ParametersCount, vTableMethod.IsGeneric),
-                        out var methodIndex))
+                var methodIndex = FindInterfaceImplementation(mapping, methodName, vTableMethod.ParametersCount, vTableMethod.IsGeneric, eligibleMethods, methodsOffset, infos);
+                if (methodIndex < 0)
                 {
+                    Logger.Instance.LogWarning("Type {Type} does not implement {Method} of il2cpp interface {Interface}, a call from il2cpp to it will crash",
+                        type, methodName, Marshal.PtrToStringUTF8(interfaces[i].Name));
                     ++index;
                     continue;
                 }
@@ -533,8 +539,93 @@ public static unsafe partial class ClassInjector
             type == typeof(string) ||
             type.IsGenericParameter) return true;
         if (type.IsByRef) return IsTypeSupported(type.GetElementType());
+        if (type.IsInterface) return IsIl2CppInterface(type);
 
         return typeof(Il2CppObjectBase).IsAssignableFrom(type);
+    }
+
+    private static bool IsIl2CppInterface(Type type)
+    {
+        return type.IsInterface && !type.ContainsGenericParameters && Il2CppClassPointerStore.GetNativeClassPointer(type) != IntPtr.Zero;
+    }
+
+    // Interfaces the type adds on top of its base class, the base's own are already in the il2cpp class it derives from
+    private static Type[] DeclaredIl2CppInterfaces(Type type)
+    {
+        var inherited = type.BaseType?.GetInterfaces() ?? Array.Empty<Type>();
+        return type.GetInterfaces().Where(it => !inherited.Contains(it) && IsIl2CppInterface(it)).ToArray();
+    }
+
+    // Base slots inside an interface block resolve through the managed interface map, which knows explicit implementations
+    private static MethodInfo? FindBaseInterfaceImplementation(Type type, INativeClassStruct baseClass, int slot, int parameterCount)
+    {
+        for (var i = 0; i < baseClass.InterfaceOffsetsCount; i++)
+        {
+            var pair = baseClass.InterfaceOffsets[i];
+            var interfaceClass = UnityVersionHandler.Wrap(pair.interfaceType);
+            if (slot < pair.offset || slot >= pair.offset + interfaceClass.MethodCount)
+                continue;
+
+            Type managedInterface;
+            try
+            {
+                managedInterface = SystemTypeFromIl2CppType((Il2CppTypeStruct*)IL2CPP.il2cpp_class_get_type((IntPtr)pair.interfaceType));
+            }
+            catch (Exception)
+            {
+                return null;
+            }
+
+            if (!managedInterface.IsInterface || !managedInterface.IsAssignableFrom(type))
+                return null;
+
+            // The base slot may carry a dotted explicit name while the interface method has the plain one.
+            // ClassInit first, the interface's method table may not be built yet.
+            InjectorHelpers.ClassInit(pair.interfaceType);
+            if (interfaceClass.Methods == null)
+                return null;
+            var interfaceMethodName = Marshal.PtrToStringUTF8(UnityVersionHandler.Wrap(interfaceClass.Methods[slot - pair.offset]).Name);
+            var map = type.GetInterfaceMap(managedInterface);
+            for (var j = 0; j < map.InterfaceMethods.Length; j++)
+            {
+                var interfaceMethod = map.InterfaceMethods[j];
+                if (interfaceMethod.Name != interfaceMethodName || interfaceMethod.GetParameters().Length != parameterCount)
+                    continue;
+
+                var target = map.TargetMethods[j];
+                return target.DeclaringType == type ? target : null;
+            }
+
+            return null;
+        }
+
+        return null;
+    }
+
+    // Explicit implementations carry the interface name in the method name, so the runtime's mapping is asked first.
+    // The name lookup covers interfaces handed over as raw class pointers.
+    private static int FindInterfaceImplementation(InterfaceMapping? mapping, string methodName, int parameterCount, bool isGeneric,
+        MethodInfo[] eligibleMethods, int methodsOffset, Dictionary<(string, int, bool), int> infos)
+    {
+        if (mapping.HasValue)
+        {
+            var map = mapping.Value;
+            for (var i = 0; i < map.InterfaceMethods.Length; i++)
+            {
+                var interfaceMethod = map.InterfaceMethods[i];
+                if (interfaceMethod.Name != methodName || interfaceMethod.GetParameters().Length != parameterCount || interfaceMethod.IsGenericMethod != isGeneric)
+                    continue;
+
+                var target = map.TargetMethods[i];
+                if (target.DeclaringType!.IsInterface)
+                    break;
+
+                var eligibleIndex = Array.IndexOf(eligibleMethods, target);
+                return eligibleIndex < 0 ? -1 : eligibleIndex + methodsOffset;
+            }
+        }
+
+        return infos.TryGetValue((methodName, parameterCount, isGeneric), out var methodIndex) ? methodIndex : -1;
     }
 
     private static bool IsFieldEligible(FieldInfo field)
@@ -834,6 +925,26 @@ public static unsafe partial class ClassInjector
 
         var body = method.GetILGenerator();
 
+        // A buffered struct return receives the il2cpp return storage as the first argument, ahead of this
+        var returnsBuffer = TrampolineHelpers.NeedsReturnBuffer(monoMethod.ReturnType);
+        LocalBuilder returnBuffer = null;
+        if (returnsBuffer)
+        {
+            if (UnityVersionHandler.IsMetadataV29OrHigher)
+            {
+                body.Emit(OpCodes.Ldarg_S, (byte)4);
+            }
+            else
+            {
+                returnBuffer = body.DeclareLocal(typeof(IntPtr));
+                body.Emit(OpCodes.Ldc_I4, TrampolineHelpers.ValueSize(monoMethod.ReturnType));
+                body.Emit(OpCodes.Conv_U);
+                body.Emit(OpCodes.Localloc);
+                body.Emit(OpCodes.Stloc, returnBuffer);
+                body.Emit(OpCodes.Ldloc, returnBuffer);
+            }
+        }
+
         body.Emit(OpCodes.Ldarg_2);
         for (var i = 0; i < monoMethod.GetParameters().Length; i++)
         {
@@ -847,16 +958,21 @@ public static unsafe partial class ClassInjector
                 body.Emit(OpCodes.Ldobj, nativeType);
         }
 
+        var nativeReturnType = returnsBuffer ? typeof(IntPtr) : monoMethod.ReturnType.NativeType();
+        var calliParameters = (returnsBuffer ? new[] { typeof(IntPtr), typeof(IntPtr) } : new[] { typeof(IntPtr) })
+            .Concat(monoMethod.GetParameters().Select(it => it.ParameterType.NativeType())).ToArray();
         body.Emit(OpCodes.Ldarg_0);
-        body.EmitCalli(OpCodes.Calli, CallingConvention.Cdecl, monoMethod.ReturnType.NativeType(),
-            new[] { typeof(IntPtr) }.Concat(monoMethod.GetParameters().Select(it => it.ParameterType.NativeType()))
-                .ToArray());
+        body.EmitCalli(OpCodes.Calli, CallingConvention.Cdecl, nativeReturnType, calliParameters);
 
         if (UnityVersionHandler.IsMetadataV29OrHigher)
         {
-            if (monoMethod.ReturnType != typeof(void))
+            if (returnsBuffer)
             {
-                var returnValue = body.DeclareLocal(monoMethod.ReturnType.NativeType());
+                body.Emit(OpCodes.Pop);
+            }
+            else if (monoMethod.ReturnType != typeof(void))
+            {
+                var returnValue = body.DeclareLocal(nativeReturnType);
                 body.Emit(OpCodes.Stloc, returnValue);
                 body.Emit(OpCodes.Ldarg_S, (byte)4);
                 body.Emit(OpCodes.Ldloc, returnValue);
@@ -870,13 +986,18 @@ public static unsafe partial class ClassInjector
                 body.Emit(OpCodes.Ldc_I4_0);
                 body.Emit(OpCodes.Conv_I);
             }
-            else if (monoMethod.ReturnType.IsValueType)
+            else if (returnsBuffer)
             {
-                var returnValue = body.DeclareLocal(monoMethod.ReturnType);
+                body.Emit(OpCodes.Pop);
+                body.Emit(OpCodes.Ldsfld, ClassPointerField(monoMethod.ReturnType));
+                body.Emit(OpCodes.Ldloc, returnBuffer);
+                body.Emit(OpCodes.Call, typeof(IL2CPP).GetMethod(nameof(IL2CPP.il2cpp_value_box))!);
+            }
+            else if (monoMethod.ReturnType.IsValueType || TrampolineHelpers.IsPassedByValue(monoMethod.ReturnType))
+            {
+                var returnValue = body.DeclareLocal(nativeReturnType);
                 body.Emit(OpCodes.Stloc, returnValue);
-                var classField = typeof(Il2CppClassPointerStore<>).MakeGenericType(monoMethod.ReturnType)
-                    .GetField(nameof(Il2CppClassPointerStore<int>.NativeClassPtr));
-                body.Emit(OpCodes.Ldsfld, classField);
+                body.Emit(OpCodes.Ldsfld, ClassPointerField(monoMethod.ReturnType));
                 body.Emit(OpCodes.Ldloca, returnValue);
                 body.Emit(OpCodes.Call, typeof(IL2CPP).GetMethod(nameof(IL2CPP.il2cpp_value_box))!);
             }
@@ -889,6 +1010,11 @@ public static unsafe partial class ClassInjector
         var @delegate = method.CreateDelegate(GetInvokerDelegateType());
         GCHandle.Alloc(@delegate);
         return @delegate;
+    }
+
+    private static FieldInfo ClassPointerField(Type type)
+    {
+        return typeof(Il2CppClassPointerStore<>).MakeGenericType(type).GetField(nameof(Il2CppClassPointerStore<int>.NativeClassPtr))!;
     }
 
     private static Type GetInvokerDelegateType()
@@ -916,8 +1042,10 @@ public static unsafe partial class ClassInjector
 
     private static Delegate CreateTrampoline(MethodInfo monoMethod)
     {
-        var nativeParameterTypes = new[] { typeof(IntPtr) }.Concat(monoMethod.GetParameters()
-            .Select(it => it.ParameterType.NativeType()).Concat(new[] { typeof(Il2CppMethodInfo*) })).ToArray();
+        var returnsBuffer = TrampolineHelpers.NeedsReturnBuffer(monoMethod.ReturnType);
+        var argumentOffset = returnsBuffer ? 1 : 0;
+        var nativeParameterTypes = (returnsBuffer ? new[] { typeof(IntPtr), typeof(IntPtr) } : new[] { typeof(IntPtr) })
+            .Concat(monoMethod.GetParameters().Select(it => it.ParameterType.NativeType())).Concat(new[] { typeof(Il2CppMethodInfo*) }).ToArray();
 
         var managedParameters = new[] { monoMethod.DeclaringType }
             .Concat(monoMethod.GetParameters().Select(it => it.ParameterType)).ToArray();
@@ -925,7 +1053,7 @@ public static unsafe partial class ClassInjector
         var method = new DynamicMethod(
             "Trampoline_" + ExtractSignature(monoMethod) + monoMethod.DeclaringType + monoMethod.Name,
             MethodAttributes.Static | MethodAttributes.Public, CallingConventions.Standard,
-            monoMethod.ReturnType.NativeType(), nativeParameterTypes,
+            returnsBuffer ? typeof(IntPtr) : monoMethod.ReturnType.NativeType(), nativeParameterTypes,
             monoMethod.DeclaringType, true);
 
         var signature = new DelegateSupport.MethodSignature(monoMethod, true);
@@ -935,7 +1063,7 @@ public static unsafe partial class ClassInjector
 
         body.BeginExceptionBlock();
 
-        body.Emit(OpCodes.Ldarg_0);
+        body.Emit(OpCodes.Ldarg, argumentOffset);
         body.Emit(OpCodes.Call,
             typeof(ClassInjectorBase).GetMethod(nameof(ClassInjectorBase.GetMonoObjectFromIl2CppPointer))!);
         body.Emit(OpCodes.Castclass, monoMethod.DeclaringType);
@@ -949,12 +1077,12 @@ public static unsafe partial class ClassInjector
             {
                 body.Emit(OpCodes.Ldc_I8, Il2CppClassPointerStore.GetNativeClassPointer(parameter).ToInt64());
                 body.Emit(OpCodes.Conv_I);
-                body.Emit(Environment.Is64BitProcess ? OpCodes.Ldarg : OpCodes.Ldarga_S, i);
+                body.Emit(TrampolineHelpers.IsPassedByValue(parameter) ? OpCodes.Ldarga_S : OpCodes.Ldarg, i + argumentOffset);
                 body.Emit(OpCodes.Call, typeof(IL2CPP).GetMethod(nameof(IL2CPP.il2cpp_value_box)));
             }
             else
             {
-                body.Emit(OpCodes.Ldarg, i);
+                body.Emit(OpCodes.Ldarg, i + argumentOffset);
             }
 
             if (parameter.IsValueType) continue;
@@ -964,6 +1092,10 @@ public static unsafe partial class ClassInjector
                 if (type == typeof(string))
                 {
                     body.Emit(OpCodes.Call, typeof(IL2CPP).GetMethod(nameof(IL2CPP.Il2CppStringToManaged))!);
+                }
+                else if (type.IsInterface)
+                {
+                    body.Emit(OpCodes.Call, typeof(Il2CppObjectPool).GetMethod(nameof(Il2CppObjectPool.Get))!.MakeGenericMethod(type));
                 }
                 else if (type.IsSubclassOf(typeof(Il2CppObjectBase)))
                 {
@@ -1017,13 +1149,19 @@ public static unsafe partial class ClassInjector
             var variable = indirectVariables[i];
             if (variable == null)
                 continue;
-            body.Emit(OpCodes.Ldarg_S, i);
+            body.Emit(OpCodes.Ldarg_S, i + argumentOffset);
             body.Emit(OpCodes.Ldloc, variable);
             var directType = managedParameters[i].GetElementType();
             if (directType == typeof(string))
+            {
                 body.Emit(OpCodes.Call, typeof(IL2CPP).GetMethod(nameof(IL2CPP.ManagedStringToIl2Cpp))!);
+            }
             else if (!directType.IsValueType)
+            {
+                if (directType.IsInterface)
+                    body.Emit(OpCodes.Castclass, typeof(Il2CppObjectBase));
                 body.Emit(OpCodes.Call, typeof(IL2CPP).GetMethod(nameof(IL2CPP.Il2CppObjectBaseToPtr))!);
+            }
             body.Emit(InjectorHelpers.StIndOpcodes.TryGetValue(directType, out var stindOpCodde)
                 ? stindOpCodde
                 : OpCodes.Stind_I);
@@ -1044,11 +1182,38 @@ public static unsafe partial class ClassInjector
 
         if (managedReturnVariable != null)
         {
-            body.Emit(OpCodes.Ldloc, managedReturnVariable);
-            if (monoMethod.ReturnType == typeof(string))
-                body.Emit(OpCodes.Call, typeof(IL2CPP).GetMethod(nameof(IL2CPP.ManagedStringToIl2Cpp))!);
-            else if (!monoMethod.ReturnType.IsValueType)
-                body.Emit(OpCodes.Call, typeof(IL2CPP).GetMethod(nameof(IL2CPP.Il2CppObjectBaseToPtr))!);
+            if (returnsBuffer)
+            {
+                // The buffer pointer is also the return value
+                body.Emit(OpCodes.Ldarg_0);
+                body.Emit(OpCodes.Ldloc, managedReturnVariable);
+                body.Emit(OpCodes.Call, typeof(IL2CPP).GetMethod(nameof(IL2CPP.Il2CppObjectBaseToPtrNotNull))!);
+                body.Emit(OpCodes.Call, typeof(IL2CPP).GetMethod(nameof(IL2CPP.il2cpp_object_unbox))!);
+                body.Emit(OpCodes.Ldc_I4, TrampolineHelpers.ValueSize(monoMethod.ReturnType));
+                body.Emit(OpCodes.Cpblk);
+                body.Emit(OpCodes.Ldarg_0);
+            }
+            else if (TrampolineHelpers.IsPassedByValue(monoMethod.ReturnType))
+            {
+                body.Emit(OpCodes.Ldloc, managedReturnVariable);
+                body.Emit(OpCodes.Call, typeof(IL2CPP).GetMethod(nameof(IL2CPP.Il2CppObjectBaseToPtrNotNull))!);
+                body.Emit(OpCodes.Call, typeof(IL2CPP).GetMethod(nameof(IL2CPP.il2cpp_object_unbox))!);
+                body.Emit(OpCodes.Ldobj, monoMethod.ReturnType.NativeType());
+            }
+            else
+            {
+                body.Emit(OpCodes.Ldloc, managedReturnVariable);
+                if (monoMethod.ReturnType == typeof(string))
+                {
+                    body.Emit(OpCodes.Call, typeof(IL2CPP).GetMethod(nameof(IL2CPP.ManagedStringToIl2Cpp))!);
+                }
+                else if (!monoMethod.ReturnType.IsValueType)
+                {
+                    if (monoMethod.ReturnType.IsInterface)
+                        body.Emit(OpCodes.Castclass, typeof(Il2CppObjectBase));
+                    body.Emit(OpCodes.Call, typeof(IL2CPP).GetMethod(nameof(IL2CPP.Il2CppObjectBaseToPtr))!);
+                }
+            }
         }
 
         body.Emit(OpCodes.Ret);
@@ -1067,6 +1232,8 @@ public static unsafe partial class ClassInjector
     {
         var builder = new StringBuilder();
         builder.Append(monoMethod.ReturnType.NativeType().Name);
+        // A buffered struct return shares the IntPtr native type with references but not the invoker shape
+        builder.Append(TrampolineHelpers.NeedsReturnBuffer(monoMethod.ReturnType) ? "ReturnBuffer" : "");
         builder.Append(monoMethod.IsStatic ? "" : "This");
         foreach (var parameterInfo in monoMethod.GetParameters())
             builder.Append(parameterInfo.ParameterType.NativeType().Name);

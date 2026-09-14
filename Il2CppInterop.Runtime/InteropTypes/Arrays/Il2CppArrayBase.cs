@@ -138,7 +138,7 @@ public abstract class Il2CppArrayBase<T> : Il2CppArrayBase, IList<T>, IReadOnlyL
         if (typeof(T).IsValueType) // can't construct required types here directly because of unfulfilled generic constraint
             return Activator.CreateInstance(typeof(Il2CppStructArray<>).MakeGenericType(typeof(T)), pointer) as
                 Il2CppArrayBase<T>;
-        if (typeof(Il2CppObjectBase).IsAssignableFrom(typeof(T)))
+        if (typeof(Il2CppObjectBase).IsAssignableFrom(typeof(T)) || typeof(T).IsInterface)
             return Activator.CreateInstance(typeof(Il2CppReferenceArray<>).MakeGenericType(typeof(T)), pointer) as
                 Il2CppArrayBase<T>;
 

@@ -3,7 +3,7 @@ using Il2CppInterop.Runtime.Runtime;
 
 namespace Il2CppInterop.Runtime.InteropTypes.Fields;
 
-public unsafe class Il2CppReferenceField<TRefObj> where TRefObj : Il2CppObjectBase
+public unsafe class Il2CppReferenceField<TRefObj> where TRefObj : class
 {
     private readonly IntPtr _fieldPtr;
     private readonly Il2CppObjectBase _obj;
@@ -28,7 +28,7 @@ public unsafe class Il2CppReferenceField<TRefObj> where TRefObj : Il2CppObjectBa
 
     public void Set(TRefObj value)
     {
-        *GetPointerToData() = value != null ? value.Pointer : IntPtr.Zero;
+        *GetPointerToData() = IL2CPP.Il2CppObjectBaseToPtr((Il2CppObjectBase?)(object?)value);
     }
 
     public static implicit operator TRefObj(Il2CppReferenceField<TRefObj> _this)

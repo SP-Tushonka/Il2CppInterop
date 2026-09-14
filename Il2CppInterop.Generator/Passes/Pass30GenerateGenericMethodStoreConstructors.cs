@@ -42,7 +42,7 @@ public static class Pass30GenerateGenericMethodStoreConstructors
                         ctorBuilder.Add(OpCodes.Call, assemblyContext.Imports.IL2CPP_il2cpp_method_get_object.Value);
                         ctorBuilder.Add(OpCodes.Newobj,
                             new MemberReference(il2CppSystemReflectionMethodInfoRef, ".ctor",
-                                MethodSignature.CreateInstance(assemblyContext.Imports.Module.Void(), assemblyContext.Imports.Module.IntPtr())));
+                                MethodSignature.CreateInstance(assemblyContext.Imports.Module.Void(), [assemblyContext.Imports.Module.IntPtr()])));
 
                         ctorBuilder.Add(OpCodes.Ldc_I4, oldMethod.GenericParameters.Count);
 
@@ -65,7 +65,7 @@ public static class Pass30GenerateGenericMethodStoreConstructors
 
                             ctorBuilder.Add(OpCodes.Call,
                                 new MemberReference(il2CppSystemTypeRef, "internal_from_handle",
-                                MethodSignature.CreateStatic(il2CppSystemTypeRef.ToTypeSignature(), assemblyContext.Imports.Module.IntPtr())));
+                                MethodSignature.CreateStatic(il2CppSystemTypeRef.ToTypeSignature(), [assemblyContext.Imports.Module.IntPtr()])));
                             ctorBuilder.Add(OpCodes.Stelem_Ref);
                         }
 

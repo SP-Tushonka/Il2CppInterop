@@ -8,7 +8,7 @@ using Il2CppInterop.Runtime.Runtime;
 
 namespace Il2CppInterop.Runtime.InteropTypes;
 
-public class Il2CppObjectBase
+public class Il2CppObjectBase : IIl2CppObjectBase
 {
     private static readonly MethodInfo _unboxMethod = typeof(Il2CppObjectBase).GetMethod(nameof(Unbox));
     internal bool isWrapped;
@@ -16,21 +16,32 @@ public class Il2CppObjectBase
 
     private nint myGcHandle;
 
+    // The handle is strong and il2cpp's GC never moves objects, so the pointer and class are fixed for the wrapper's life
+    private IntPtr myPointer;
+    private IntPtr myClass;
+
     public Il2CppObjectBase(IntPtr pointer)
     {
         CreateGCHandle(pointer);
     }
 
-    public IntPtr ObjectClass => IL2CPP.il2cpp_object_get_class(Pointer);
+    public IntPtr ObjectClass
+    {
+        get
+        {
+            if (myClass == IntPtr.Zero)
+                myClass = IL2CPP.il2cpp_object_get_class(Pointer);
+            return myClass;
+        }
+    }
 
     public IntPtr Pointer
     {
         get
         {
-            var handleTarget = IL2CPP.il2cpp_gchandle_get_target(myGcHandle);
-            if (handleTarget == IntPtr.Zero)
+            if (myPointer == IntPtr.Zero)
                 throw new ObjectCollectedException("Object was garbage collected in IL2CPP domain");
-            return handleTarget;
+            return myPointer;
         }
     }
 
@@ -54,9 +65,10 @@ public class Il2CppObjectBase
             return;
 
         myGcHandle = IL2CPP.il2cpp_gchandle_new(objHdl, false);
+        myPointer = objHdl;
     }
 
-    public T Cast<T>() where T : Il2CppObjectBase
+    public T Cast<T>() where T : class
     {
         return TryCast<T>() ?? throw new InvalidCastException(
             $"Can't cast object of type {IL2CPP.il2cpp_class_get_name_(IL2CPP.il2cpp_object_get_class(Pointer))} to type {typeof(T)}");
@@ -94,6 +106,8 @@ public class Il2CppObjectBase
         private static Func<IntPtr, T> Create()
         {
             var type = Il2CppClassPointerStore<T>.CreatedTypeRedirect ?? typeof(T);
+            if (type.IsInterface)
+                type = InterfaceProxyType(type);
 
             var dynamicMethod = new DynamicMethod($"Initializer<{typeof(T).AssemblyQualifiedName}>", type, _intPtrTypeArray);
             dynamicMethod.DefineParameter(0, ParameterAttributes.None, "pointer");
@@ -146,7 +160,17 @@ public class Il2CppObjectBase
         public static Func<IntPtr, T> Initializer => _initializer ??= Create();
     }
 
-    public T? TryCast<T>() where T : Il2CppObjectBase
+    // Generated interfaces nest a proxy class that carries the pointer for values typed by the interface
+    internal static Type InterfaceProxyType(Type interfaceType)
+    {
+        var definition = interfaceType.IsGenericType ? interfaceType.GetGenericTypeDefinition() : interfaceType;
+        var proxy = definition.GetNestedType("Il2CppProxy");
+        if (proxy == null)
+            throw new ArgumentException($"{interfaceType} is not an Il2Cpp interface");
+        return interfaceType.IsGenericType ? proxy.MakeGenericType(interfaceType.GetGenericArguments()) : proxy;
+    }
+
+    public T? TryCast<T>() where T : class
     {
         var nestedTypeClassPointer = Il2CppClassPointerStore<T>.NativeClassPtr;
         if (nestedTypeClassPointer == IntPtr.Zero)
@@ -155,6 +179,9 @@ public class Il2CppObjectBase
         var ownClass = IL2CPP.il2cpp_object_get_class(Pointer);
         if (!IL2CPP.il2cpp_class_is_assignable_from(nestedTypeClassPointer, ownClass))
             return null;
+
+        if (this is T self)
+            return self;
 
         if (RuntimeSpecificsStore.IsInjected(ownClass))
         {

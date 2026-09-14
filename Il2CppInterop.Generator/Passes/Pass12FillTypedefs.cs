@@ -28,8 +28,29 @@ public static class Pass12FillTypedefs
         // Second pass is explicitly done after first to account for rewriting of generic base types - value-typeness is important there
         foreach (var assemblyContext in context.Assemblies)
             foreach (var typeContext in assemblyContext.Types)
-                if (!typeContext.OriginalType.IsEnum && typeContext.ComputedTypeSpecifics !=
-                    TypeRewriteContext.TypeSpecifics.BlittableStruct)
+            {
+                if (typeContext.OriginalType.IsEnum || typeContext.ComputedTypeSpecifics == TypeRewriteContext.TypeSpecifics.BlittableStruct)
+                    continue;
+
+                if (typeContext.OriginalType.IsInterface)
+                {
+                    typeContext.NewType.BaseType = null;
+                    typeContext.NewType.Interfaces.Add(new InterfaceImplementation(assemblyContext.Imports.IIl2CppObjectBase.ToTypeDefOrRef()));
+                }
+                else
+                {
                     typeContext.NewType.BaseType = assemblyContext.RewriteTypeRef(typeContext.OriginalType.BaseType!);
+                }
+
+                // Blittable structs have no object to dispatch on, so only object backed types keep their interfaces
+                foreach (var interfaceImplementation in typeContext.OriginalType.Interfaces)
+                {
+                    var resolvedInterface = interfaceImplementation.Interface?.Resolve();
+                    if (resolvedInterface == null || !resolvedInterface.IsInterface)
+                        continue;
+
+                    typeContext.NewType.Interfaces.Add(new InterfaceImplementation(assemblyContext.RewriteTypeRef(interfaceImplementation.Interface)));
+                }
+            }
     }
 }

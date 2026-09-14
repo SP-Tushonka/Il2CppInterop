@@ -15,24 +15,8 @@ public static class Pass13FillGenericConstraints
             {
                 for (var i = 0; i < typeContext.OriginalType.GenericParameters.Count; i++)
                 {
-                    var originalParameter = typeContext.OriginalType.GenericParameters[i];
-                    var newParameter = typeContext.NewType.GenericParameters[i];
-                    foreach (var originalConstraint in originalParameter.Constraints)
-                    {
-                        if (originalConstraint.IsSystemValueType() || originalConstraint.IsInterface())
-                            continue;
-
-                        if (originalConstraint.IsSystemEnum())
-                        {
-                            newParameter.Constraints.Add(new GenericParameterConstraint(
-                                typeContext.AssemblyContext.Imports.Module.Enum().ToTypeDefOrRef()));
-                            continue;
-                        }
-
-                        newParameter.Constraints.Add(
-                            new GenericParameterConstraint(
-                                assemblyContext.RewriteTypeRef(originalConstraint.Constraint!)));
-                    }
+                    ConstraintRewriter.Rewrite(typeContext.OriginalType.GenericParameters[i], typeContext.NewType.GenericParameters[i],
+                        assemblyContext.Imports, type => assemblyContext.RewriteTypeRef(type));
                 }
             }
         }

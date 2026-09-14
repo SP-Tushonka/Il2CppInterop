@@ -86,11 +86,11 @@ public class AssemblyRewriteContext
 
             var convertedElementType = RewriteTypeRef(elementType);
             if (elementType is GenericParameterSignature)
-                return new GenericInstanceTypeSignature(Imports.Il2CppArrayBase.ToTypeDefOrRef(), false, convertedElementType);
+                return new GenericInstanceTypeSignature(Imports.Il2CppArrayBase.ToTypeDefOrRef(), false, [convertedElementType]);
 
             return new GenericInstanceTypeSignature(convertedElementType.IsValueType()
                     ? Imports.Il2CppStructArray.ToTypeDefOrRef()
-                    : Imports.Il2CppReferenceArray.ToTypeDefOrRef(), false, convertedElementType);
+                    : Imports.Il2CppReferenceArray.ToTypeDefOrRef(), false, [convertedElementType]);
         }
 
         if (typeRef is GenericParameterSignature genericParameter)

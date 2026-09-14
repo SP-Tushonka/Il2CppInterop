@@ -17,6 +17,9 @@ public class FieldRewriteContext
     public readonly FieldDefinition OriginalField;
 
     public readonly MemberReference PointerField;
+
+    // Offset of an instance field, resolved once in the static constructor
+    public readonly MemberReference? OffsetField;
     public readonly string UnmangledName;
 
     public FieldRewriteContext(TypeRewriteContext declaringType, FieldDefinition originalField,
@@ -35,6 +38,15 @@ public class FieldRewriteContext
 
         Debug.Assert(pointerField.Signature is not null);
         PointerField = new MemberReference(DeclaringType.SelfSubstitutedRef, pointerField.Name, new FieldSignature(pointerField.Signature!.FieldType));
+
+        if (originalField.IsStatic)
+            return;
+
+        var offsetField = new FieldDefinition("NativeFieldOffset_" + UnmangledName,
+            FieldAttributes.Private | FieldAttributes.Static | FieldAttributes.InitOnly,
+            declaringType.AssemblyContext.Imports.Module.Int());
+        declaringType.NewType.Fields.Add(offsetField);
+        OffsetField = new MemberReference(DeclaringType.SelfSubstitutedRef, offsetField.Name, new FieldSignature(offsetField.Signature!.FieldType));
     }
 
     private string UnmangleFieldNameBase(FieldDefinition field, GeneratorOptions options)

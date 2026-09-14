@@ -104,4 +104,59 @@ internal static class AsmResolverExtensions
     {
         return new GenericParameterSignature(genericParameter.Owner is ITypeDescriptor ? GenericParameterType.Type : GenericParameterType.Method, genericParameter.Number);
     }
+
+    public static TypeSignature ToTypeSignature(this ITypeDescriptor descriptor)
+    {
+        // 6.0.1 resolves a reference to decide value-typeness and throws for assemblies outside the rewrite.
+        // Those are all classes, which the old API assumed as well.
+        if (descriptor is TypeDefinition definition)
+            return definition.ToTypeSignature(definition.IsValueType);
+
+        var context = descriptor.ContextModule?.RuntimeContext;
+        if (context != null && descriptor.TryGetIsValueType(context) != null)
+            return descriptor.ToTypeSignature(context);
+
+        if (descriptor is ITypeDefOrRef defOrRef)
+            return defOrRef.ToTypeSignature(false);
+
+        return descriptor.ToTypeSignature(context!);
+    }
+
+    public static TypeDefinition? Resolve(this ITypeDescriptor descriptor)
+    {
+        if (descriptor is TypeDefinition direct)
+            return direct;
+        if (descriptor is TypeDefOrRefSignature { Type: TypeDefinition wrapped })
+            return wrapped;
+
+        var context = descriptor.ContextModule?.RuntimeContext;
+        if (context == null)
+            return null;
+
+        return descriptor.Resolve(context, out var definition) == ResolutionStatus.Success ? definition : null;
+    }
+
+    public static GenericInstanceTypeSignature MakeGenericInstanceType(this ITypeDescriptor type,
+        params TypeSignature[] typeArguments)
+    {
+        return type.MakeGenericInstanceType(type.ContextModule!.RuntimeContext, typeArguments);
+    }
+
+    public static MethodDefinition? Resolve(this IMethodDescriptor method)
+    {
+        var context = method.DeclaringType?.ContextModule?.RuntimeContext;
+        if (context == null)
+            return null;
+
+        return method.Resolve(context, out var definition) == ResolutionStatus.Success ? definition : null;
+    }
+
+    public static FieldDefinition? Resolve(this IFieldDescriptor field)
+    {
+        var context = field.DeclaringType?.ContextModule?.RuntimeContext;
+        if (context == null)
+            return null;
+
+        return field.Resolve(context, out var definition) == ResolutionStatus.Success ? definition : null;
+    }
 }

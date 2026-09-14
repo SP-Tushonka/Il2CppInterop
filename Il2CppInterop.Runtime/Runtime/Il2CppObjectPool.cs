@@ -33,8 +33,9 @@ public static class Il2CppObjectPool
         if (s_cache.TryGetValue(ptr, out var reference) && reference.TryGetTarget(out var cachedObject))
         {
             if (cachedObject is T cachedObjectT) return cachedObjectT;
+            // A concrete wrapper is worth more in the cache than an interface proxy of the same object
+            if (typeof(T).IsInterface) return Il2CppObjectBase.InitializerStore<T>.Initializer(ptr);
             cachedObject.pooledPtr = IntPtr.Zero;
-            // This leaves the case when you cast to an interface handled as if nothing was cached
         }
 
         var newObj = Il2CppObjectBase.InitializerStore<T>.Initializer(ptr);

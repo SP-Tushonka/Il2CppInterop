@@ -39,6 +39,7 @@ public static class DelegateSupport
     {
         var typeName = "Il2CppToManagedDelegate_" + managedMethodInner.DeclaringType + "_" + signature.GetHashCode() +
                        (signature.HasThis ? "HasThis" : "") +
+                       (signature.HasReturnBuffer ? "ReturnBuffer" : "") +
                        (signature.ConstructedFromNative ? "FromNative" : "");
 
         var newType = ModuleBuilder.DefineType(typeName, TypeAttributes.Sealed | TypeAttributes.Public,
@@ -52,21 +53,22 @@ public static class DelegateSupport
             MethodAttributes.Public, CallingConventions.HasThis, new[] { typeof(object), typeof(IntPtr) });
         ctor.SetImplementationFlags(MethodImplAttributes.CodeTypeMask);
 
-        var parameterOffset = signature.HasThis ? 1 : 0;
+        var parameterOffset = (signature.HasThis ? 1 : 0) + (signature.HasReturnBuffer ? 1 : 0);
         var managedParameters = managedMethodInner.GetParameters();
         var parameterTypes = new Type[managedParameters.Length + 1 + parameterOffset];
-
-        if (signature.HasThis)
+        if (signature.HasReturnBuffer)
             parameterTypes[0] = typeof(IntPtr);
-
+        if (signature.HasThis)
+            parameterTypes[signature.HasReturnBuffer ? 1 : 0] = typeof(IntPtr);
         parameterTypes[parameterTypes.Length - 1] = typeof(Il2CppMethodInfo*);
         for (var i = 0; i < managedParameters.Length; i++)
             parameterTypes[i + parameterOffset] = managedParameters[i].ParameterType.NativeType();
+        var nativeReturnType = signature.HasReturnBuffer ? typeof(IntPtr) : managedMethodInner.ReturnType.NativeType();
 
         newType.DefineMethod("Invoke",
             MethodAttributes.HideBySig | MethodAttributes.Virtual | MethodAttributes.NewSlot | MethodAttributes.Public,
             CallingConventions.HasThis,
-            managedMethodInner.ReturnType.NativeType(),
+            nativeReturnType,
             parameterTypes).SetImplementationFlags(MethodImplAttributes.CodeTypeMask);
 
         newType.DefineMethod("BeginInvoke",
@@ -79,7 +81,7 @@ public static class DelegateSupport
         newType.DefineMethod("EndInvoke",
             MethodAttributes.HideBySig | MethodAttributes.Virtual | MethodAttributes.NewSlot | MethodAttributes.Public,
             CallingConventions.HasThis,
-            managedMethodInner.ReturnType.NativeType(),
+            nativeReturnType,
             new[] { typeof(IAsyncResult) }).SetImplementationFlags(MethodImplAttributes.CodeTypeMask);
 
         return newType.CreateType();
@@ -147,6 +149,10 @@ public static class DelegateSupport
             {
                 bodyBuilder.Emit(OpCodes.Call, typeof(IL2CPP).GetMethod(nameof(IL2CPP.Il2CppStringToManaged))!);
             }
+            else if (parameterType.IsInterface)
+            {
+                bodyBuilder.Emit(OpCodes.Call, typeof(Il2CppObjectPool).GetMethod(nameof(Il2CppObjectPool.Get))!.MakeGenericMethod(parameterType));
+            }
             else if (!parameterType.IsValueType)
             {
                 var labelNull = bodyBuilder.DefineLabel();
@@ -173,6 +179,8 @@ public static class DelegateSupport
             var labelDone = bodyBuilder.DefineLabel();
             bodyBuilder.Emit(OpCodes.Dup);
             bodyBuilder.Emit(OpCodes.Brfalse, labelNull);
+            if (managedMethod.ReturnType.IsInterface)
+                bodyBuilder.Emit(OpCodes.Castclass, typeof(Il2CppObjectBase));
             bodyBuilder.Emit(OpCodes.Call,
                 typeof(Il2CppObjectBase).GetProperty(nameof(Il2CppObjectBase.Pointer))!.GetMethod);
             bodyBuilder.Emit(OpCodes.Br, labelDone);
@@ -223,6 +231,10 @@ public static class DelegateSupport
             throw new ArgumentException($"{typeof(TIl2Cpp)} is not a delegate");
 
         var managedInvokeMethod = @delegate.GetType().GetMethod("Invoke")!;
+        if (managedInvokeMethod.ReturnType.IsSubclassOf(typeof(ValueType)))
+            throw new ArgumentException(
+                $"Delegate returns {managedInvokeMethod.ReturnType} (non-blittable struct) which is not supported");
+
         var parameterInfos = managedInvokeMethod.GetParameters();
         foreach (var parameterInfo in parameterInfos)
         {
@@ -321,6 +333,7 @@ public static class DelegateSupport
     {
         public readonly bool ConstructedFromNative;
         public readonly bool HasThis;
+        public readonly bool HasReturnBuffer;
         private readonly int _hashCode;
 
         public MethodSignature(Il2CppSystem.Reflection.MethodInfo methodInfo, bool hasThis)
@@ -344,10 +357,12 @@ public static class DelegateSupport
         {
             HasThis = hasThis;
             ConstructedFromNative = false;
+            HasReturnBuffer = TrampolineHelpers.NeedsReturnBuffer(methodInfo.ReturnType);
 
             var hashCode = new HashCode();
 
             hashCode.Add(methodInfo.ReturnType.NativeType());
+            hashCode.Add(HasReturnBuffer);
             if (hasThis) hashCode.Add(methodInfo.DeclaringType.NativeType());
             foreach (var parameterInfo in methodInfo.GetParameters())
             {

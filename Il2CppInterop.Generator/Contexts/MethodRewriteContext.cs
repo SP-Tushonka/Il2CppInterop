@@ -37,6 +37,14 @@ public class MethodRewriteContext
     public readonly bool OriginalNameObfuscated;
     public readonly long Rva;
 
+    // Interface method this one implements explicitly. Blittable structs keep no interfaces, so theirs stay plain public methods.
+    public IMethodDefOrRef? ExplicitInterfaceMethod { get; private set; }
+
+    // il2cpp resolves a final method to itself, so explicit implementations dispatch through the interface method
+    public ITypeDefOrRef? ExplicitInterfaceRef { get; set; }
+    public int ExplicitInterfaceToken { get; set; }
+    public MemberReference? InterfaceMethodInfoPointerField { get; set; }
+
     public readonly List<XrefInstance> XrefScanResults = new();
 
     public long MetadataInitFlagRva;
@@ -53,10 +61,14 @@ public class MethodRewriteContext
                                  (OriginalMethod.Name?.IsObfuscated(declaringType.AssemblyContext.GlobalContext
                                      .Options) ?? false);
 
+        if (declaringType.ComputedTypeSpecifics != TypeRewriteContext.TypeSpecifics.BlittableStruct && originalMethod.DeclaringType != null)
+            ExplicitInterfaceMethod = originalMethod.DeclaringType.MethodImplementations
+                .Where(implementation => implementation.Body == originalMethod).Select(implementation => implementation.Declaration).FirstOrDefault();
+
         var newAttributes = AdjustAttributes(originalMethod.Attributes, originalMethod.Name == "Finalize");
         var newSignature = (newAttributes & MethodAttributes.Static) != 0
-            ? MethodSignature.CreateStatic(declaringType.AssemblyContext.Imports.Module.Void(), originalMethod.GenericParameters.Count)
-            : MethodSignature.CreateInstance(declaringType.AssemblyContext.Imports.Module.Void(), originalMethod.GenericParameters.Count);
+            ? MethodSignature.CreateStatic(declaringType.AssemblyContext.Imports.Module.Void(), originalMethod.GenericParameters.Count, [])
+            : MethodSignature.CreateInstance(declaringType.AssemblyContext.Imports.Module.Void(), originalMethod.GenericParameters.Count, []);
         var newMethod = new MethodDefinition("", newAttributes, newSignature);
         newMethod.CilMethodBody = new();
         NewMethod = newMethod;
@@ -141,21 +153,8 @@ public class MethodRewriteContext
                 var newParameter = NewMethod.GenericParameters[index];
                 selfSubstMethodRef.TypeArguments.Add(newParameter.ToTypeSignature());
 
-                foreach (var oldConstraint in oldParameter.Constraints)
-                {
-                    if (oldConstraint.IsSystemValueType() || oldConstraint.IsInterface())
-                        continue;
-
-                    if (oldConstraint.IsSystemEnum())
-                    {
-                        newParameter.Constraints.Add(new GenericParameterConstraint(
-                            DeclaringType.AssemblyContext.Imports.Module.Enum().ToTypeDefOrRef()));
-                        continue;
-                    }
-
-                    newParameter.Constraints.Add(new GenericParameterConstraint(
-                        DeclaringType.AssemblyContext.RewriteTypeRef(oldConstraint.Constraint?.ToTypeSignature()).ToTypeDefOrRef()));
-                }
+                ConstraintRewriter.Rewrite(oldParameter, newParameter, DeclaringType.AssemblyContext.Imports,
+                    type => DeclaringType.AssemblyContext.RewriteTypeRef(type));
             }
 
             var pointerField = new FieldDefinition("Pointer", FieldAttributes.Assembly | FieldAttributes.Static,
@@ -181,7 +180,18 @@ public class MethodRewriteContext
         original &= ~MethodAttributes.ReuseSlot;
         original &= ~MethodAttributes.CheckAccessOnOverride;
         original |= MethodAttributes.Public;
+        // Dotted names are explicit implementations and go private. Plain names such as MoveNext stay public for existing patches.
+        if (ExplicitInterfaceMethod != null)
+            original = (original & ~MethodAttributes.MemberAccessMask) | MethodAttributes.Virtual | MethodAttributes.NewSlot
+                | (OriginalMethod.Name!.Value.Contains('.') ? MethodAttributes.Private | MethodAttributes.Final : MethodAttributes.Public);
         return original;
+    }
+
+    public void DropExplicitImplementation()
+    {
+        ExplicitInterfaceMethod = null;
+        NewMethod.Name = OriginalMethod.Name.MakeValidInSource();
+        NewMethod.Attributes = (NewMethod.Attributes & ~MethodAttributes.MemberAccessMask & ~MethodAttributes.Final) | MethodAttributes.Public;
     }
 
     private string UnmangleMethodName()
@@ -199,6 +209,10 @@ public class MethodRewriteContext
 
         if (method.Name.IsObfuscated(DeclaringType.AssemblyContext.GlobalContext.Options))
             return UnmangleMethodNameWithSignature();
+
+        // Explicit implementations keep their dotted name, the MethodImpl row binds them
+        if (ExplicitInterfaceMethod != null)
+            return method.Name!;
 
         return method.Name.MakeValidInSource();
     }

@@ -185,9 +185,27 @@ namespace Il2CppInterop.Runtime.Injection
                 Logger.Instance.LogTrace("GameAssembly.dll: 0x{Il2CppModuleAddress}", Il2CppModule.BaseAddress.ToInt64().ToString("X2"));
                 throw new NotSupportedException("Failed to use signature for Class::Init and a substitute cannot be found, please create an issue and report your unity version & game");
             }
+            // il2cpp_class_has_references is a Class::Init call followed by a read of the flag it sets, so the
+            // first direct call in it is Class::Init. Unlike the signatures this does not depend on which
+            // register the compiler chose for the class pointer.
+            static nint FindClassInitByExportXref()
+            {
+                if (!TryGetIl2CppExport(nameof(IL2CPP.il2cpp_class_has_references), out nint hasReferences))
+                    return 0;
+
+                return XrefScannerLowLevel.CallTargets(hasReferences).FirstOrDefault();
+            }
+
             nint pClassInit = s_ClassInitSignatures
                 .Select(s => MemoryUtils.FindSignatureInModule(Il2CppModule, s))
                 .FirstOrDefault(p => p != 0);
+
+            if (pClassInit == 0)
+            {
+                pClassInit = FindClassInitByExportXref();
+                if (pClassInit != 0)
+                    Logger.Instance.LogTrace("Class::Init found through il2cpp_class_has_references");
+            }
 
             if (pClassInit == 0)
             {

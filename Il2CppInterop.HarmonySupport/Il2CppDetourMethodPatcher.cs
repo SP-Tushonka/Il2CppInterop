@@ -193,7 +193,7 @@ internal unsafe class Il2CppDetourMethodPatcher : MethodPatcher
         if (RuntimeInformation.IsOSPlatform(OSPlatform.Windows))
         {
             // https://learn.microsoft.com/en-us/cpp/build/x64-calling-convention?view=msvc-170#return-values
-            return size != 1 && size != 4 && size != 8;
+            return size != 1 && size != 2 && size != 4 && size != 8;
         }
 
         if (Environment.Is64BitProcess)
@@ -327,6 +327,14 @@ internal unsafe class Il2CppDetourMethodPatcher : MethodPatcher
                 // Return the same pointer to the return buffer
                 il.Emit(OpCodes.Ldarg_0);
             }
+            else if (TrampolineHelpers.IsPassedByValue(managedReturnType))
+            {
+                // A small struct goes back in a register, so the boxed payload is copied out as the fixed size struct
+                il.Emit(OpCodes.Ldloc, managedReturnVariable);
+                il.Emit(OpCodes.Call, ObjectBaseToPtrNotNullMethodInfo);
+                EmitUnbox(il);
+                il.Emit(OpCodes.Ldobj, unmanagedReturnType);
+            }
             else
             {
                 il.Emit(OpCodes.Ldloc, managedReturnVariable);
@@ -361,6 +369,11 @@ internal unsafe class Il2CppDetourMethodPatcher : MethodPatcher
         {
             il.Emit(OpCodes.Call, ObjectBaseToPtrMethodInfo);
         }
+        else if (returnType.IsInterface)
+        {
+            il.Emit(OpCodes.Castclass, typeof(Il2CppObjectBase));
+            il.Emit(OpCodes.Call, ObjectBaseToPtrMethodInfo);
+        }
     }
 
     private static void EmitConvertArgumentToManaged(ILGenerator il,
@@ -391,7 +404,7 @@ internal unsafe class Il2CppDetourMethodPatcher : MethodPatcher
                 il.Emit(OpCodes.Call, AccessTools.Method(typeof(IL2CPP), nameof(IL2CPP.il2cpp_object_new)));
                 var objLocal = il.DeclareLocal(typeof(IntPtr));
                 il.Emit(OpCodes.Stloc, objLocal);
-                il.Emit(Environment.Is64BitProcess ? OpCodes.Ldarg : OpCodes.Ldarga_S, argIndex);
+                il.Emit(TrampolineHelpers.IsPassedByValue(managedParamType) ? OpCodes.Ldarga_S : OpCodes.Ldarg, argIndex);
                 il.Emit(OpCodes.Ldloc, objLocal);
                 il.Emit(OpCodes.Call, AccessTools.Method(typeof(IL2CPP), nameof(IL2CPP.il2cpp_object_unbox)));
                 il.Emit(OpCodes.Ldc_I4, (int)valueSize);
@@ -403,9 +416,8 @@ internal unsafe class Il2CppDetourMethodPatcher : MethodPatcher
                 // Box struct into object first before conversion
                 il.Emit(OpCodes.Ldc_I8, classPtr.ToInt64());
                 il.Emit(OpCodes.Conv_I);
-                // On x64, struct is always a pointer but it is a non-pointer on x86
                 // We don't handle byref structs on x86 yet but we're yet to encounter those
-                il.Emit(Environment.Is64BitProcess ? OpCodes.Ldarg : OpCodes.Ldarga_S, argIndex);
+                il.Emit(TrampolineHelpers.IsPassedByValue(managedParamType) ? OpCodes.Ldarga_S : OpCodes.Ldarg, argIndex);
                 il.Emit(OpCodes.Call,
                     AccessTools.Method(typeof(IL2CPP),
                         nameof(IL2CPP.il2cpp_value_box)));
@@ -445,7 +457,7 @@ internal unsafe class Il2CppDetourMethodPatcher : MethodPatcher
             {
                 il.Emit(OpCodes.Call, IL2CPPToManagedStringMethodInfo);
             }
-            else if (originalType.IsSubclassOf(typeof(Il2CppObjectBase)))
+            else if (originalType.IsSubclassOf(typeof(Il2CppObjectBase)) || originalType.IsInterface)
             {
                 EmitCreateIl2CppObject(originalType);
             }

@@ -75,6 +75,47 @@ var myInstance = new MyClass();
 var someInstance = new MyClass(pointer);
 ```
 
+### Running the base class constructor
+
+`DerivedConstructorPointer<T>()` only allocates the il2cpp object, no constructor of the base class runs, so
+fields the game initialises in its constructor stay empty. `ClassInjector.InvokeBaseConstructor(this, args...)`
+runs the base constructor whose parameters accept the given arguments. Call it after `DerivedConstructorBody`,
+a constructor may call virtual methods your class overrides. Arguments can be wrappers, strings, primitives,
+enums and blittable structs.
+
+```c#
+public class MyController : Player.FirearmController
+{
+    public MyController(IntPtr ptr) : base(ptr) { }
+
+    public MyController(Player player) : base(ClassInjector.DerivedConstructorPointer<MyController>())
+    {
+        ClassInjector.DerivedConstructorBody(this);
+        ClassInjector.InvokeBaseConstructor(this, player);
+    }
+}
+```
+
+`InvokeBaseConstructor<TBase>(this, args...)` picks a specific ancestor instead of the direct base. The base
+may be a closed generic type such as `List<Il2CppSystem.Object>`, only open generic definitions are rejected.
+
+### Sealed base classes
+
+The generator emits wrappers of sealed il2cpp classes unsealed (`GeneratorOptions.UnsealClasses`), and the injector
+registers a type deriving from one with a warning instead of refusing. What you get is a real il2cpp subclass:
+`is`, `Cast` and reflection agree it derives from the base, and calls that reach it through an ancestor's virtual
+slot or an interface see your overrides. What you do not get is the game noticing through the sealed type itself.
+il2cpp compiles calls on a sealed class as direct calls and casts to it as an exact class comparison, so a method
+the game invokes on a variable typed as the sealed class runs the base body, and `is SealedClass` in game code is
+false for your object.
+
+### Struct parameters and returns
+
+Methods of injected classes can take and return struct wrappers (`MongoID`, `Nullable<T>` and friends). Win64 passes
+wrappers of 1, 2, 4 or 8 bytes in registers and everything else through a pointer, returns follow the same rule with
+a caller allocated buffer for the larger ones. The trampolines handle both, so an `IEnumerator<MongoID>` implemented
+in managed code can be consumed by the game.
+
 ## Fine-tuning
 
 * `[HideFromIl2Cpp]` can be used to prevent a method from being exposed to il2cpp

@@ -30,7 +30,7 @@ public static class Pass80UnstripMethods
                 foreach (var unityMethod in unityType.Methods)
                 {
                     var isICall = (unityMethod.ImplAttributes & MethodImplAttributes.InternalCall) != 0;
-                    if (unityMethod.IsConstructor) continue;
+                    if (unityMethod.IsConstructor && (unityMethod.IsStatic || processedType.ComputedTypeSpecifics != TypeRewriteContext.TypeSpecifics.BlittableStruct)) continue;
                     if (unityMethod.IsAbstract) continue;
                     if (!unityMethod.HasMethodBody && !isICall) continue; // CoreCLR chokes on no-body methods
 
@@ -75,22 +75,8 @@ public static class Pass80UnstripMethods
                     {
                         var newParameter = new GenericParameter(unityMethodGenericParameter.Name.MakeValidInSource());
                         newParameter.Attributes = unityMethodGenericParameter.Attributes;
-                        foreach (var genericParameterConstraint in unityMethodGenericParameter.Constraints)
-                        {
-                            if (genericParameterConstraint.IsSystemValueType() || genericParameterConstraint.IsInterface())
-                                continue;
-
-                            if (genericParameterConstraint.IsSystemEnum())
-                            {
-                                newParameter.Constraints.Add(new GenericParameterConstraint(imports.Module.Enum().ToTypeDefOrRef()));
-                                continue;
-                            }
-
-                            var newType = ResolveTypeInNewAssemblies(context, genericParameterConstraint.Constraint?.ToTypeSignature(),
-                                imports);
-                            if (newType != null)
-                                newParameter.Constraints.Add(new GenericParameterConstraint(newType.ToTypeDefOrRef()));
-                        }
+                        ConstraintRewriter.Rewrite(unityMethodGenericParameter, newParameter, imports,
+                            type => ResolveTypeInNewAssemblies(context, type, imports));
 
                         newMethod.GenericParameters.Add(newParameter);
                     }
@@ -206,7 +192,7 @@ public static class Pass80UnstripMethods
                 { IsValueType: true } => imports.Il2CppStructArray,
                 _ => imports.Il2CppReferenceArray
             };
-            return new GenericInstanceTypeSignature(genericBase.ToTypeDefOrRef(), false, resolvedElementType);
+            return new GenericInstanceTypeSignature(genericBase.ToTypeDefOrRef(), false, [resolvedElementType]);
         }
 
         if (unityType is PointerTypeSignature)

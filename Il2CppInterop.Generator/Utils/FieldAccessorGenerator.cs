@@ -69,8 +69,7 @@ internal static class FieldAccessorGenerator
 
             getterBody.EmitObjectToPointer(fieldContext.DeclaringType.OriginalType.ToTypeSignature(), fieldContext.DeclaringType.NewType.ToTypeSignature(),
                 fieldContext.DeclaringType, 0, false, false, false, false, out _);
-            getterBody.Add(OpCodes.Ldsfld, fieldContext.PointerField);
-            getterBody.Add(OpCodes.Call, imports.IL2CPP_il2cpp_field_get_offset.Value);
+            getterBody.Add(OpCodes.Ldsfld, fieldContext.OffsetField!);
             getterBody.Add(OpCodes.Add);
 
             getterBody.Add(OpCodes.Stloc_0);
@@ -110,8 +109,7 @@ internal static class FieldAccessorGenerator
             setterBody.EmitObjectToPointer(fieldContext.DeclaringType.OriginalType.ToTypeSignature(), fieldContext.DeclaringType.NewType.ToTypeSignature(),
                 fieldContext.DeclaringType, 0, false, false, false, false, out _);
             setterBody.Add(OpCodes.Dup);
-            setterBody.Add(OpCodes.Ldsfld, fieldContext.PointerField);
-            setterBody.Add(OpCodes.Call, imports.IL2CPP_il2cpp_field_get_offset.Value);
+            setterBody.Add(OpCodes.Ldsfld, fieldContext.OffsetField!);
             setterBody.Add(OpCodes.Add);
             setterBody.EmitObjectStore(field.Signature!.FieldType, property.Signature.ReturnType, fieldContext.DeclaringType, 1);
         }

@@ -5,7 +5,7 @@ using Il2CppInterop.Runtime.Runtime;
 
 namespace Il2CppInterop.Runtime.InteropTypes.Arrays;
 
-public class Il2CppReferenceArray<T> : Il2CppArrayBase<T> where T : Il2CppObjectBase?
+public class Il2CppReferenceArray<T> : Il2CppArrayBase<T> where T : class?
 {
     private static readonly int ourElementTypeSize;
     private static readonly bool ourElementIsValueType;
@@ -42,7 +42,7 @@ public class Il2CppReferenceArray<T> : Il2CppArrayBase<T> where T : Il2CppObject
     public override T this[int index]
     {
         get => WrapElement(GetElementPointer(index))!;
-        set => StoreValue(GetElementPointer(index), value?.Pointer ?? IntPtr.Zero);
+        set => StoreValue(GetElementPointer(index), IL2CPP.Il2CppObjectBaseToPtr((Il2CppObjectBase?)(object?)value));
     }
 
     private IntPtr GetElementPointer(int index)

@@ -3,6 +3,8 @@ using System.Runtime.CompilerServices;
 using AsmResolver.DotNet;
 using AsmResolver.DotNet.Signatures;
 
+using Il2CppInterop.Generator.Extensions;
+
 namespace Il2CppInterop.Generator.Utils;
 
 internal static class CorlibReferences
@@ -12,6 +14,7 @@ internal static class CorlibReferences
     /// </summary>
     public static string TargetFrameworkName => ".NET 6.0";
     public static AssemblyReference TargetCorlib => KnownCorLibs.SystemRuntime_v6_0_0_0;
+    public static DotNetRuntimeInfo TargetRuntime => DotNetRuntimeInfo.NetCoreApp(6, 0);
 
     public static void RewriteCorlibReference(AssemblyReference assemblyNameReference)
     {
@@ -206,7 +209,7 @@ internal static class CorlibReferences
     public static MemberReference TypeGetTypeFromHandle(this ModuleDefinition module)
     {
         var type = module.Type();
-        MethodSignature signature = MethodSignature.CreateStatic(type, module.RuntimeTypeHandle());
+        MethodSignature signature = MethodSignature.CreateStatic(type, [module.RuntimeTypeHandle()]);
         return new MemberReference(type.ToTypeDefOrRef(), nameof(System.Type.GetTypeFromHandle), signature);
     }
 
@@ -225,7 +228,7 @@ internal static class CorlibReferences
     public static MemberReference StringEquals(this ModuleDefinition module)
     {
         var @string = module.String();
-        MethodSignature signature = MethodSignature.CreateStatic(module.Bool(), @string, @string);
+        MethodSignature signature = MethodSignature.CreateStatic(module.Bool(), [@string, @string]);
         return new MemberReference(@string.ToTypeDefOrRef(), nameof(string.Equals), signature);
     }
 

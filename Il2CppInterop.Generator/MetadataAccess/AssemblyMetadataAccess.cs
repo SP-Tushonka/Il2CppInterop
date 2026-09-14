@@ -12,7 +12,7 @@ public class AssemblyMetadataAccess : IIl2CppMetadataAccess
 
     public AssemblyMetadataAccess(IEnumerable<string> assemblyPaths)
     {
-        Load(assemblyPaths.Select(AssemblyDefinition.FromFile));
+        Load(assemblyPaths.Select(path => myAssemblyResolver.Context.LoadAssembly(path)));
     }
 
     public AssemblyMetadataAccess(IEnumerable<AssemblyDefinition> assemblies)
@@ -24,7 +24,6 @@ public class AssemblyMetadataAccess : IIl2CppMetadataAccess
 
     public void Dispose()
     {
-        myAssemblyResolver.ClearCache();
         myAssemblies.Clear();
         myAssembliesByName.Clear();
     }
@@ -62,8 +61,6 @@ public class AssemblyMetadataAccess : IIl2CppMetadataAccess
         {
             myAssemblies.Add(sourceAssembly);
             myAssembliesByName[sourceAssembly.Name!] = sourceAssembly;
-            sourceAssembly.ManifestModule!.MetadataResolver = new DefaultMetadataResolver(myAssemblyResolver);
-            myAssemblyResolver.AddToCache(sourceAssembly);
         }
 
         foreach (var sourceAssembly in myAssemblies)

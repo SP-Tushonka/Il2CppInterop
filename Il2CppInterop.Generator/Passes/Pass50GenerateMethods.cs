@@ -123,12 +123,18 @@ public static class Pass50GenerateMethods
                         }
 
                         var newParam = newMethod.Parameters[i];
-                        // TODO: create a default instance for Il2CppSystem.ValueType wrapped value type
                         // NOTE(Kas): out parameters of value type are passed directly as a pointer to the il2cpp method
                         // since we don't need to perform any additional copies
                         if (newParam.Definition!.IsOut && newParam.ParameterType is ByReferenceTypeSignature && !newParam.ParameterType.GetElementType().IsValueType())
                         {
                             var elementType = newParam.ParameterType.GetElementType();
+
+                            // A value type that isn't blittable is wrapped in an Il2CppSystem.ValueType subclass, so
+                            // the test above admits it even though il2cpp will write the whole struct through the
+                            // pointer we pass rather than a single object reference. The original parameter is what
+                            // still says which of the two this is.
+                            var isWrappedValueType = elementType is not GenericParameterSignature &&
+                                                     originalMethod.Parameters[i].ParameterType.GetElementType().IsValueType();
 
                             // Storage for the output Il2CppObjectBase pointer, it's
                             // unused if there's a generic value type parameter
@@ -160,6 +166,22 @@ public static class Pass50GenerateMethods
                                 bodyBuilder.AddLoadArgument(argOffset + i);
 
                                 continueBlock.Instruction = bodyBuilder.Add(OpCodes.Nop);
+                            }
+                            else if (isWrappedValueType)
+                            {
+                                // Box a default instance and hand il2cpp its data, which is storage of the size the
+                                // callee expects. The wrapper built for the caller afterwards is that same box, so
+                                // what the callee wrote is what the caller reads, with no copy either way.
+                                var classPointerTypeRef = new GenericInstanceTypeSignature(imports.Il2CppClassPointerStore.ToTypeDefOrRef(),
+                                    imports.Il2CppClassPointerStore.IsValueType(), [elementType]);
+                                var classPointerFieldRef = ReferenceCreator.CreateFieldReference("NativeClassPtr",
+                                    imports.Module.IntPtr(), classPointerTypeRef.ToTypeDefOrRef());
+
+                                bodyBuilder.Add(OpCodes.Ldsfld, imports.Module.DefaultImporter.ImportField(classPointerFieldRef));
+                                bodyBuilder.Add(OpCodes.Call, imports.IL2CPP_il2cpp_object_new.Value);
+                                bodyBuilder.Add(OpCodes.Stloc, outVar);
+                                bodyBuilder.Add(OpCodes.Ldloc, outVar);
+                                bodyBuilder.Add(OpCodes.Call, imports.IL2CPP_il2cpp_object_unbox.Value);
                             }
                             else
                             {

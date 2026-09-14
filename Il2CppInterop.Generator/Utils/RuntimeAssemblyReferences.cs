@@ -51,6 +51,7 @@ public class RuntimeAssemblyReferences
     public Lazy<IMethodDefOrRef> IL2CPP_il2cpp_value_box { get; private set; }
     public Lazy<IMethodDefOrRef> IL2CPP_il2cpp_class_value_size { get; private set; }
     public Lazy<IMethodDefOrRef> IL2CPP_il2cpp_object_get_class { get; private set; }
+    public Lazy<IMethodDefOrRef> IL2CPP_il2cpp_method_get_class { get; private set; }
     public Lazy<IMethodDefOrRef> IL2CPP_il2cpp_class_is_valuetype { get; private set; }
     public Lazy<IMethodDefOrRef> Il2CppException_RaiseExceptionIfNecessary { get; private set; }
     public Lazy<IMethodDefOrRef> IL2CPP_il2cpp_object_get_virtual_method { get; private set; }
@@ -373,6 +374,13 @@ public class RuntimeAssemblyReferences
         IL2CPP_il2cpp_object_get_class = new Lazy<IMethodDefOrRef>(() =>
         {
             var mr = ReferenceCreator.CreateStaticMethodReference("il2cpp_object_get_class", ResolveType("System.IntPtr"),
+                ResolveType("Il2CppInterop.Runtime.IL2CPP").ToTypeDefOrRef(), ResolveType("System.IntPtr"));
+            return mr;
+        });
+
+        IL2CPP_il2cpp_method_get_class = new Lazy<IMethodDefOrRef>(() =>
+        {
+            var mr = ReferenceCreator.CreateStaticMethodReference("il2cpp_method_get_class", ResolveType("System.IntPtr"),
                 ResolveType("Il2CppInterop.Runtime.IL2CPP").ToTypeDefOrRef(), ResolveType("System.IntPtr"));
             return mr;
         });

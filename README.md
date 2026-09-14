@@ -1,3 +1,6 @@
+> [!WARNING]
+> This fork was developed with AI assistance. The changes in it were reviewed and tested against a live game
+
 <p align="center">
     <img src="logo/logo_big.svg" width="300">
 </p>

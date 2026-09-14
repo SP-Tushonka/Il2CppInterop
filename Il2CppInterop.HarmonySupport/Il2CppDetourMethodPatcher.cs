@@ -1,4 +1,4 @@
-﻿using System.Reflection;
+using System.Reflection;
 using System.Reflection.Emit;
 using System.Runtime.InteropServices;
 using HarmonyLib;
@@ -317,23 +317,53 @@ internal unsafe class Il2CppDetourMethodPatcher : MethodPatcher
         {
             if (hasReturnBuffer)
             {
+                // This runs after the catch block, so the return is null whenever the managed method threw
+                var returnBufferEmpty = il.DefineLabel();
+                var returnBufferFilled = il.DefineLabel();
+
+                il.Emit(OpCodes.Ldloc, managedReturnVariable);
+                il.Emit(OpCodes.Brfalse, returnBufferEmpty);
+
                 il.Emit(OpCodes.Ldarg_0);
                 il.Emit(OpCodes.Ldloc, managedReturnVariable);
                 il.Emit(OpCodes.Call, ObjectBaseToPtrNotNullMethodInfo);
                 EmitUnbox(il);
                 il.Emit(OpCodes.Ldc_I4, returnSize);
                 il.Emit(OpCodes.Cpblk);
+                il.Emit(OpCodes.Br, returnBufferFilled);
+
+                il.MarkLabel(returnBufferEmpty);
+                il.Emit(OpCodes.Ldarg_0);
+                il.Emit(OpCodes.Ldc_I4_0);
+                il.Emit(OpCodes.Ldc_I4, returnSize);
+                il.Emit(OpCodes.Initblk);
+
+                il.MarkLabel(returnBufferFilled);
 
                 // Return the same pointer to the return buffer
                 il.Emit(OpCodes.Ldarg_0);
             }
             else if (TrampolineHelpers.IsPassedByValue(managedReturnType))
             {
-                // A small struct goes back in a register, so the boxed payload is copied out as the fixed size struct
+                // A small struct goes back in a register, so the boxed payload is copied out as the fixed size
+                // struct. Same as above, a throwing patch leaves nothing to copy and has to yield a zeroed value.
+                var registerValue = il.DeclareLocal(unmanagedReturnType);
+                var registerValueSet = il.DefineLabel();
+
+                il.Emit(OpCodes.Ldloca, registerValue);
+                il.Emit(OpCodes.Initobj, unmanagedReturnType);
+
+                il.Emit(OpCodes.Ldloc, managedReturnVariable);
+                il.Emit(OpCodes.Brfalse, registerValueSet);
+
                 il.Emit(OpCodes.Ldloc, managedReturnVariable);
                 il.Emit(OpCodes.Call, ObjectBaseToPtrNotNullMethodInfo);
                 EmitUnbox(il);
                 il.Emit(OpCodes.Ldobj, unmanagedReturnType);
+                il.Emit(OpCodes.Stloc, registerValue);
+
+                il.MarkLabel(registerValueSet);
+                il.Emit(OpCodes.Ldloc, registerValue);
             }
             else
             {

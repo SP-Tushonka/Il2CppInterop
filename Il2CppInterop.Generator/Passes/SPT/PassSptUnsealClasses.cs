@@ -1,3 +1,4 @@
+using System.Collections.Generic;
 using AsmResolver.DotNet;
 using Il2CppInterop.Generator.Contexts;
 using Il2CppInterop.Generator.Extensions;
@@ -15,16 +16,30 @@ public static class PassSptUnsealClasses
 
         foreach (var assemblyContext in context.Assemblies)
         {
-            foreach (var typeContext in assemblyContext.Types)
+            foreach (var type in assemblyContext.NewAssembly.ManifestModule!.GetAllTypes())
             {
-                var original = typeContext.OriginalType;
-                if (!original.IsSealed || original.IsAbstract || original.IsInterface || original.IsEnum || original.IsValueType())
+                TypeRewriteContext typeContext;
+                try
+                {
+                    typeContext = context.GetContextForNewType(type);
+                }
+                catch (KeyNotFoundException)
+                {
                     continue;
-                if (original.BaseType?.FullName is "System.MulticastDelegate" or "System.Delegate")
+                }
+
+                if (typeContext.OriginalType != null ? KeepsSeal(typeContext.OriginalType) : KeepsSeal(type))
                     continue;
 
-                typeContext.NewType.IsSealed = false;
+                type.IsSealed = false;
             }
         }
+    }
+
+    private static bool KeepsSeal(TypeDefinition type)
+    {
+        if (!type.IsSealed || type.IsAbstract || type.IsInterface || type.IsEnum || type.IsValueType || type.IsValueType())
+            return true;
+        return type.BaseType?.FullName is "System.MulticastDelegate" or "System.Delegate" or "Il2CppSystem.MulticastDelegate" or "Il2CppSystem.Delegate";
     }
 }

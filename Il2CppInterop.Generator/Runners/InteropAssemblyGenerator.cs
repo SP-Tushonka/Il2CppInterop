@@ -78,11 +78,6 @@ internal class InteropAssemblyGeneratorRunner : IRunner
             Pass12FillTypedefs.DoPass(rewriteContext);
         }
 
-        using (new TimingCookie("Unsealing classes"))
-        {
-            PassSptUnsealClasses.DoPass(rewriteContext);
-        }
-
         using (new TimingCookie("Filling generic constraints"))
         {
             Pass13FillGenericConstraints.DoPass(rewriteContext);
@@ -170,6 +165,23 @@ internal class InteropAssemblyGeneratorRunner : IRunner
             Pass70GenerateProperties.DoPass(rewriteContext);
         }
 
+        using (new TimingCookie("Bridging System interfaces"))
+        {
+            PassSptBridgeSystemInterfaces.DoPass(rewriteContext);
+        }
+
+        using (new TimingCookie("Creating value type helpers"))
+        {
+            PassSptValueTypeHelpers.DoPass(rewriteContext);
+            PassSptNullableHelpers.DoPass(rewriteContext);
+            PassSptBoxingConversions.DoPass(rewriteContext);
+        }
+
+        using (new TimingCookie("Creating events"))
+        {
+            PassSptEvents.DoPass(rewriteContext);
+        }
+
         if (options.UnityBaseLibsDir != null)
         {
             using (new TimingCookie("Unstripping types"))
@@ -195,6 +207,11 @@ internal class InteropAssemblyGeneratorRunner : IRunner
         else
         {
             Logger.Instance.LogWarning("Not performing unstripping as unity libs are not specified");
+        }
+
+        using (new TimingCookie("Unsealing classes"))
+        {
+            PassSptUnsealClasses.DoPass(rewriteContext);
         }
 
         // Breaks .net runtime

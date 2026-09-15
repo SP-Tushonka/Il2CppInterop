@@ -8,7 +8,7 @@ using Il2CppInterop.Runtime.Runtime;
 
 namespace Il2CppInterop.Runtime.InteropTypes;
 
-public class Il2CppObjectBase : IIl2CppObjectBase
+public partial class Il2CppObjectBase : IIl2CppObjectBase
 {
     private static readonly MethodInfo _unboxMethod = typeof(Il2CppObjectBase).GetMethod(nameof(Unbox));
     internal bool isWrapped;
@@ -188,7 +188,7 @@ public class Il2CppObjectBase : IIl2CppObjectBase
             if (ClassInjectorBase.GetMonoObjectFromIl2CppPointer(Pointer) is T monoObject) return monoObject;
         }
 
-        return InitializerStore<T>.Initializer(Pointer);
+        return Il2CppObjectPool.Create<T>(Pointer, ownClass, out _);
     }
 
     ~Il2CppObjectBase()

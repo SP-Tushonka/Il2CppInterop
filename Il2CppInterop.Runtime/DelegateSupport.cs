@@ -3,6 +3,7 @@ using System.Collections.Concurrent;
 using System.Linq;
 using System.Reflection;
 using System.Reflection.Emit;
+using System.Runtime.CompilerServices;
 using System.Runtime.InteropServices;
 using System.Text;
 using Il2CppInterop.Common;
@@ -26,6 +27,9 @@ public static class DelegateSupport
         AssemblyBuilder.DefineDynamicModule("Il2CppTrampolineDelegates");
 
     private static readonly ConcurrentDictionary<MethodInfo, Delegate> NativeToManagedTrampolines = new();
+
+    // One il2cpp delegate per managed delegate and target type, so removing from an il2cpp event finds what was added
+    private static readonly ConditionalWeakTable<Delegate, ConcurrentDictionary<Type, Il2CppObjectBase>> ConvertedDelegates = new();
 
     internal static Type GetOrCreateDelegateType(MethodSignature signature, MethodInfo managedMethod)
     {
@@ -227,6 +231,17 @@ public static class DelegateSupport
         if (@delegate == null)
             return null;
 
+        var converted = ConvertedDelegates.GetValue(@delegate, static _ => new ConcurrentDictionary<Type, Il2CppObjectBase>());
+        if (converted.TryGetValue(typeof(TIl2Cpp), out var existing))
+            return (TIl2Cpp)existing;
+
+        var result = ConvertDelegateUncached<TIl2Cpp>(@delegate);
+        converted[typeof(TIl2Cpp)] = result;
+        return result;
+    }
+
+    private static TIl2Cpp ConvertDelegateUncached<TIl2Cpp>(Delegate @delegate) where TIl2Cpp : Il2CppObjectBase
+    {
         if (!typeof(Il2CppSystem.Delegate).IsAssignableFrom(typeof(TIl2Cpp)))
             throw new ArgumentException($"{typeof(TIl2Cpp)} is not a delegate");
 

@@ -25,6 +25,15 @@ public class GeneratorOptions
     // SPT addition, wrappers of sealed il2cpp classes are emitted unsealed so injected types can derive from them
     public bool UnsealClasses { get; set; } = true;
 
+    // SPT addition, the generated collection interfaces extend their System counterparts
+    public bool BridgeSystemInterfaces { get; set; } = true;
+
+    // SPT addition, Clone and field constructors on wrapped value types, Nullable conversions, boxing conversions
+    public bool ValueTypeHelpers { get; set; } = true;
+
+    // SPT addition, il2cpp events become C# events, a same named backing field property moves to <Name>Field
+    public bool GenerateEvents { get; set; } = true;
+
     public PrefixMode Il2CppPrefixMode { get; set; } = PrefixMode.OptIn;
     public HashSet<string> NamespacesAndAssembliesToPrefix { get; } =
         new() { "System", "mscorlib", "Microsoft", "Mono", "I18N" };

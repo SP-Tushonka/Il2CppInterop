@@ -28,18 +28,32 @@ public static class Il2CppObjectPool
             if (monoObject is T monoObjectT) return monoObjectT;
         }
 
-        if (DisableCaching) return Il2CppObjectBase.InitializerStore<T>.Initializer(ptr);
+        if (DisableCaching) return Create<T>(ptr, ownClass, out _);
 
         if (s_cache.TryGetValue(ptr, out var reference) && reference.TryGetTarget(out var cachedObject))
         {
             if (cachedObject is T cachedObjectT) return cachedObjectT;
-            // A concrete wrapper is worth more in the cache than an interface proxy of the same object
-            if (typeof(T).IsInterface) return Il2CppObjectBase.InitializerStore<T>.Initializer(ptr);
+            var replacement = Create<T>(ptr, ownClass, out var mostDerived);
+            // A class wrapper is worth more in the cache than an interface proxy of the same object
+            if (!mostDerived && typeof(T).IsInterface) return replacement;
             cachedObject.pooledPtr = IntPtr.Zero;
+            return Cache(ptr, replacement);
         }
 
-        var newObj = Il2CppObjectBase.InitializerStore<T>.Initializer(ptr);
+        return Cache(ptr, Create<T>(ptr, ownClass, out _));
+    }
 
+    // The wrapper of the object's own class when the generated assemblies have one that fits T, so is and as see the
+    // real type. T itself otherwise, which is the interface proxy when T is an interface.
+    internal static T Create<T>(IntPtr ptr, IntPtr ownClass, out bool mostDerived)
+    {
+        var type = Il2CppWrapperTypes.Resolve(ownClass);
+        mostDerived = type != null && type != typeof(T) && typeof(T).IsAssignableFrom(type);
+        return mostDerived ? (T)(object)Il2CppWrapperTypes.Create(type!, ptr) : Il2CppObjectBase.InitializerStore<T>.Initializer(ptr);
+    }
+
+    private static T Cache<T>(IntPtr ptr, T newObj)
+    {
         var il2CppObjectBase = Unsafe.As<T, Il2CppObjectBase>(ref newObj);
         s_cache[ptr] = new WeakReference<Il2CppObjectBase>(il2CppObjectBase);
         il2CppObjectBase.pooledPtr = ptr;

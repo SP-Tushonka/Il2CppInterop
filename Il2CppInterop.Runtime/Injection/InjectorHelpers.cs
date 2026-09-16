@@ -146,6 +146,39 @@ namespace Il2CppInterop.Runtime.Injection
         internal delegate void d_ClassInit(Il2CppClass* klass);
         internal static d_ClassInit ClassInit;
 
+        private static d_ClassInit? s_ClassInitFallback;
+
+        /// <summary>
+        /// Initializes a class that is about to be read as a class, rather than merely asked to initialize.
+        /// </summary>
+        /// <remarks>
+        /// A class the game has not used yet carries an empty vtable and no interface offsets, and a reader cannot
+        /// tell that from a class of abstract methods that implements nothing. Class::Init is resolved by scanning,
+        /// so whether the call did anything is not known until the class says so: proving it on the class in hand is
+        /// the only check that does not rest on the scan having been right.
+        /// </remarks>
+        internal static void EnsureClassInitialized(INativeClassStruct klass)
+        {
+            // Either flag means the vtable has been built: the class struct before 22_0 has no vtable flag to report
+            // and the handlers answer false for it, and Class::Init builds the vtable before it marks the class
+            static bool IsBuilt(INativeClassStruct klass) => klass.IsVtableInitialized || klass.Initialized;
+
+            ClassInit(klass.ClassPointer);
+            if (IsBuilt(klass)) return;
+
+            // A substitute calls Class::Init itself, which recovers a scan that landed on a function that does not
+            s_ClassInitFallback ??= TryGetIl2CppExport("mono_class_instance_size", out nint substitute)
+                ? Marshal.GetDelegateForFunctionPointer<d_ClassInit>(substitute)
+                : null;
+
+            s_ClassInitFallback?.Invoke(klass.ClassPointer);
+            if (IsBuilt(klass)) return;
+
+            throw new NotSupportedException(
+                $"Class {Marshal.PtrToStringUTF8(klass.Name)} could not be initialized in il2cpp, so its vtable was " +
+                "never built. Please create an issue and report your unity version & game");
+        }
+
         private static readonly MemoryUtils.SignatureDefinition[] s_ClassInitSignatures =
         {
             new MemoryUtils.SignatureDefinition
@@ -185,15 +218,18 @@ namespace Il2CppInterop.Runtime.Injection
                 Logger.Instance.LogTrace("GameAssembly.dll: 0x{Il2CppModuleAddress}", Il2CppModule.BaseAddress.ToInt64().ToString("X2"));
                 throw new NotSupportedException("Failed to use signature for Class::Init and a substitute cannot be found, please create an issue and report your unity version & game");
             }
-            // il2cpp_class_has_references is a Class::Init call followed by a read of the flag it sets, so the
-            // first direct call in it is Class::Init. Unlike the signatures this does not depend on which
-            // register the compiler chose for the class pointer.
+            // mono_class_instance_size is a Class::Init call followed by a read of the size field, so the first
+            // direct call in it is Class::Init. Unlike the signatures this does not depend on which register the
+            // compiler chose for the class pointer.
+            //
+            // Not il2cpp_class_has_references: it guards its call on size_inited, so what it calls is
+            // Class::SetupFields, which leaves the vtable and the interface offsets of an uninitialized class empty.
             static nint FindClassInitByExportXref()
             {
-                if (!TryGetIl2CppExport(nameof(IL2CPP.il2cpp_class_has_references), out nint hasReferences))
+                if (!TryGetIl2CppExport("mono_class_instance_size", out nint instanceSize))
                     return 0;
 
-                return XrefScannerLowLevel.CallTargets(hasReferences).FirstOrDefault();
+                return XrefScannerLowLevel.CallTargets(instanceSize).FirstOrDefault();
             }
 
             nint pClassInit = s_ClassInitSignatures
@@ -204,7 +240,7 @@ namespace Il2CppInterop.Runtime.Injection
             {
                 pClassInit = FindClassInitByExportXref();
                 if (pClassInit != 0)
-                    Logger.Instance.LogTrace("Class::Init found through il2cpp_class_has_references");
+                    Logger.Instance.LogTrace("Class::Init found through mono_class_instance_size");
             }
 
             if (pClassInit == 0)

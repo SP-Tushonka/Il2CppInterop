@@ -1259,6 +1259,12 @@ public static unsafe partial class ClassInjector
         builder.Append(monoMethod.ReturnType.NativeType().Name);
         // A buffered struct return shares the IntPtr native type with references but not the invoker shape
         builder.Append(TrampolineHelpers.NeedsReturnBuffer(monoMethod.ReturnType) ? "ReturnBuffer" : "");
+        // The invoker boxes a value type return with the return type's own class and sizes a buffered return
+        // from that class. Neither reaches the native signature, which collapses bool onto byte and keeps only
+        // a simple name, so no value type return can share an invoker.
+        if (monoMethod.ReturnType != typeof(void) &&
+            (monoMethod.ReturnType.IsValueType || monoMethod.ReturnType.IsSubclassOf(typeof(ValueType))))
+            builder.Append(monoMethod.ReturnType.AssemblyQualifiedName);
         builder.Append(monoMethod.IsStatic ? "" : "This");
         foreach (var parameterInfo in monoMethod.GetParameters())
             builder.Append(parameterInfo.ParameterType.NativeType().Name);

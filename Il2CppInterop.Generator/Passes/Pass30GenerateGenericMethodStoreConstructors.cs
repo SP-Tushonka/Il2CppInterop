@@ -53,7 +53,7 @@ public static class Pass30GenerateGenericMethodStoreConstructors
                             ctorBuilder.Add(OpCodes.Dup);
                             ctorBuilder.Add(OpCodes.Ldc_I4, i);
 
-                            var param = storeType.GenericParameters[i];
+                            var param = storeType.GenericParameters[typeContext.NewType.GenericParameters.Count + i];
                             var storeRef = assemblyContext.Imports.Il2CppClassPointerStore.MakeGenericInstanceType(new GenericParameterSignature(GenericParameterType.Type, param.Number));
                             var fieldRef = new MemberReference(
                                 storeRef.ToTypeDefOrRef(),

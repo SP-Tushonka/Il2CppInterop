@@ -144,6 +144,17 @@ public class MethodRewriteContext
             var selfSubstRef = new GenericInstanceTypeSignature(genericMethodInfoStoreType, false);
             var selfSubstMethodRef = new GenericInstanceTypeSignature(genericMethodInfoStoreType, false);
 
+            // A nested type binds the enclosing parameters first, so a store without them reads the method's T as the class's
+            foreach (var typeParameter in DeclaringType.NewType.GenericParameters)
+            {
+                var storeParameter = new GenericParameter(typeParameter.Name, typeParameter.Attributes);
+                foreach (var constraint in typeParameter.Constraints)
+                    storeParameter.Constraints.Add(new GenericParameterConstraint(constraint.Constraint));
+                genericMethodInfoStoreType.GenericParameters.Add(storeParameter);
+                selfSubstRef.TypeArguments.Add(storeParameter.ToTypeSignature());
+                selfSubstMethodRef.TypeArguments.Add(typeParameter.ToTypeSignature());
+            }
+
             for (var index = 0; index < genericParams.Count; index++)
             {
                 var oldParameter = genericParams[index];

@@ -557,47 +557,71 @@ public static unsafe partial class ClassInjector
         return type.GetInterfaces().Where(it => !inherited.Contains(it) && IsIl2CppInterface(it)).ToArray();
     }
 
-    // Base slots inside an interface block resolve through the managed interface map, which knows explicit implementations
+    // Base slots inside an interface block resolve through the managed interface map, which knows explicit implementations.
+    // The caller falls back to a plain name lookup, so a slot this cannot serve has to come back as null rather than throw.
     private static MethodInfo? FindBaseInterfaceImplementation(Type type, INativeClassStruct baseClass, int slot, int parameterCount)
     {
-        for (var i = 0; i < baseClass.InterfaceOffsetsCount; i++)
+        try
         {
-            var pair = baseClass.InterfaceOffsets[i];
-            var interfaceClass = UnityVersionHandler.Wrap(pair.interfaceType);
-            if (slot < pair.offset || slot >= pair.offset + interfaceClass.MethodCount)
-                continue;
-
-            Type managedInterface;
-            try
+            for (var i = 0; i < baseClass.InterfaceOffsetsCount; i++)
             {
-                managedInterface = SystemTypeFromIl2CppType((Il2CppTypeStruct*)IL2CPP.il2cpp_class_get_type((IntPtr)pair.interfaceType));
-            }
-            catch (Exception)
-            {
-                return null;
-            }
+                var pair = baseClass.InterfaceOffsets[i];
 
-            if (!managedInterface.IsInterface || !managedInterface.IsAssignableFrom(type))
-                return null;
-
-            // The base slot may carry a dotted explicit name while the interface method has the plain one.
-            // ClassInit first, the interface's method table may not be built yet.
-            InjectorHelpers.ClassInit(pair.interfaceType);
-            if (interfaceClass.Methods == null)
-                return null;
-            var interfaceMethodName = Marshal.PtrToStringUTF8(UnityVersionHandler.Wrap(interfaceClass.Methods[slot - pair.offset]).Name);
-            var map = type.GetInterfaceMap(managedInterface);
-            for (var j = 0; j < map.InterfaceMethods.Length; j++)
-            {
-                var interfaceMethod = map.InterfaceMethods[j];
-                if (interfaceMethod.Name != interfaceMethodName || interfaceMethod.GetParameters().Length != parameterCount)
+                // A pair that cannot be sized cannot be ruled in or out, and a later pair may still own the slot
+                var interfaceClass = UnityVersionHandler.Wrap(pair.interfaceType);
+                if (interfaceClass == null)
                     continue;
 
-                var target = map.TargetMethods[j];
-                return target.DeclaringType == type ? target : null;
-            }
+                if (slot < pair.offset || slot >= pair.offset + interfaceClass.MethodCount)
+                    continue;
 
-            return null;
+                // Past here this pair owns the slot, so no other one can: failing is the answer, not a reason to keep looking
+                Type managedInterface;
+                try
+                {
+                    managedInterface = SystemTypeFromIl2CppType((Il2CppTypeStruct*)IL2CPP.il2cpp_class_get_type((IntPtr)pair.interfaceType));
+                }
+                catch (Exception)
+                {
+                    // An il2cpp interface with no generated proxy is an ordinary miss, not a failure
+                    return null;
+                }
+
+                if (!managedInterface.IsInterface || !managedInterface.IsAssignableFrom(type))
+                    return null;
+
+                // The base slot may carry a dotted explicit name while the interface method has the plain one.
+                // ClassInit first, the interface's method table may not be built yet.
+                InjectorHelpers.ClassInit(pair.interfaceType);
+
+                var methods = interfaceClass.Methods;
+                var methodIndex = slot - pair.offset;
+                if (methods == null || methodIndex >= interfaceClass.MethodCount)
+                    return null;
+
+                var vTableMethod = UnityVersionHandler.Wrap(methods[methodIndex]);
+                if (vTableMethod == null)
+                    return null;
+
+                var interfaceMethodName = Marshal.PtrToStringUTF8(vTableMethod.Name);
+                var map = type.GetInterfaceMap(managedInterface);
+                for (var j = 0; j < map.InterfaceMethods.Length; j++)
+                {
+                    var interfaceMethod = map.InterfaceMethods[j];
+                    if (interfaceMethod.Name != interfaceMethodName || interfaceMethod.GetParameters().Length != parameterCount)
+                        continue;
+
+                    // An abstract type can leave an interface slot unimplemented, and the map holds null for it
+                    var target = map.TargetMethods[j];
+                    return target?.DeclaringType == type ? target : null;
+                }
+
+                return null;
+            }
+        }
+        catch (Exception exception)
+        {
+            Logger.Instance.LogWarning(exception, "Interface map lookup for vtable slot {Slot} of {Type} failed, falling back to the name lookup", slot, type);
         }
 
         return null;

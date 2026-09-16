@@ -222,6 +222,21 @@ public static unsafe class IL2CPP
         return obj?.Pointer ?? throw new NullReferenceException();
     }
 
+    // The CLR has already picked the override, so a wrapper runs on an injected object only for a base call or a method it
+    // does not override. il2cpp dispatch would send a base call straight back to the override.
+    public static IntPtr ResolveVirtualMethod(IntPtr obj, IntPtr method)
+    {
+        var injectedImage = Injection.InjectorHelpers.InjectedImage;
+        if (obj != IntPtr.Zero && injectedImage != null && il2cpp_class_get_image(il2cpp_object_get_class(obj)) == (IntPtr)injectedImage.ImagePointer)
+        {
+            uint implementationFlags = 0;
+            if ((il2cpp_method_get_flags(method, ref implementationFlags) & (uint)Il2CppMethodFlags.METHOD_ATTRIBUTE_ABSTRACT) == 0)
+                return method;
+        }
+
+        return il2cpp_object_get_virtual_method(obj, method);
+    }
+
     public static IntPtr GetIl2CppNestedType(IntPtr enclosingType, string nestedTypeName)
     {
         if (enclosingType == IntPtr.Zero) return IntPtr.Zero;

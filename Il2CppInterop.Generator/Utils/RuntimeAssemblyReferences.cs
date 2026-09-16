@@ -401,7 +401,8 @@ public class RuntimeAssemblyReferences
 
         IL2CPP_il2cpp_object_get_virtual_method = new Lazy<IMethodDefOrRef>(() =>
         {
-            var mr = ReferenceCreator.CreateStaticMethodReference("il2cpp_object_get_virtual_method", ResolveType("System.IntPtr"),
+            // Resolves like il2cpp_object_get_virtual_method except for base calls from injected overrides
+            var mr = ReferenceCreator.CreateStaticMethodReference("ResolveVirtualMethod", ResolveType("System.IntPtr"),
                 ResolveType("Il2CppInterop.Runtime.IL2CPP").ToTypeDefOrRef(), ResolveType("System.IntPtr"), ResolveType("System.IntPtr"));
             return mr;
         });

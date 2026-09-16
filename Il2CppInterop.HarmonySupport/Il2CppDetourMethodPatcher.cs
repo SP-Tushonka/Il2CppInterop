@@ -308,6 +308,10 @@ internal unsafe class Il2CppDetourMethodPatcher : MethodPatcher
                 // The managed method was handed a boxed copy, since a wrapped value type cannot alias the
                 // caller's storage; copy the box back over that storage, the same way a returned struct is
                 // copied into the caller's return buffer below.
+                //
+                // This copy carries no GC write barrier. il2cpp exports only a single field barrier and no
+                // range form, so where the caller's storage is inside a managed heap object, references the
+                // struct carries can be missed by an incremental mark already in progress.
                 uint align = 0;
                 var valueSize = IL2CPP.il2cpp_class_value_size(
                     Il2CppClassPointerStore.GetNativeClassPointer(directType), ref align);
@@ -543,18 +547,29 @@ internal unsafe class Il2CppDetourMethodPatcher : MethodPatcher
     ///     box's pointer on the stack.
     /// </summary>
     /// <remarks>
-    ///     il2cpp_value_box applies .NET boxing semantics, which box a Nullable&lt;T&gt; as a bare T and so lose
-    ///     HasValue. Allocating the box and copying the struct's own bytes into it keeps the whole value whatever
-    ///     its type, so no type needs a case of its own here.
+    ///     il2cpp_value_box is the path for every type it can represent, because Object::Box runs a GC write
+    ///     barrier over the payload it copies and a plain copy does not: an incremental mark already in progress
+    ///     could otherwise miss the references a struct carries. Nullable is the one type it cannot represent,
+    ///     since .NET boxing semantics turn a Nullable&lt;T&gt; into a bare T or null and so lose HasValue, and it
+    ///     has to allocate the box and copy the struct's own bytes instead.
     /// </remarks>
     private static void EmitBoxWrappedValueType(ILGenerator il, Type managedType, Action emitValueAddress)
     {
         var classPtr = Il2CppClassPointerStore.GetNativeClassPointer(managedType);
-        uint align = 0;
-        var valueSize = IL2CPP.il2cpp_class_value_size(classPtr, ref align);
 
         il.Emit(OpCodes.Ldc_I8, classPtr.ToInt64());
         il.Emit(OpCodes.Conv_I);
+
+        if (!IsNullable(managedType))
+        {
+            emitValueAddress();
+            il.Emit(OpCodes.Call, AccessTools.Method(typeof(IL2CPP), nameof(IL2CPP.il2cpp_value_box)));
+            return;
+        }
+
+        uint align = 0;
+        var valueSize = IL2CPP.il2cpp_class_value_size(classPtr, ref align);
+
         il.Emit(OpCodes.Call, AccessTools.Method(typeof(IL2CPP), nameof(IL2CPP.il2cpp_object_new)));
         var box = il.DeclareLocal(typeof(IntPtr));
         il.Emit(OpCodes.Stloc, box);
@@ -567,6 +582,12 @@ internal unsafe class Il2CppDetourMethodPatcher : MethodPatcher
 
         il.Emit(OpCodes.Ldloc, box);
     }
+
+    // A Nullable's HasValue lives outside what .NET boxing semantics carry, so it cannot go through
+    // il2cpp_value_box
+    private static bool IsNullable(Type managedType) =>
+        managedType.IsGenericType &&
+        managedType.GetGenericTypeDefinition().FullName == "Il2CppSystem.Nullable`1";
 
     private static void CopyMemory(IntPtr src, IntPtr dest, int size) =>
         Buffer.MemoryCopy(src.ToPointer(), dest.ToPointer(), size, size);

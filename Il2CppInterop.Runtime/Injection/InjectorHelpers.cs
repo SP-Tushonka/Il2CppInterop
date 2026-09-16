@@ -185,15 +185,18 @@ namespace Il2CppInterop.Runtime.Injection
                 Logger.Instance.LogTrace("GameAssembly.dll: 0x{Il2CppModuleAddress}", Il2CppModule.BaseAddress.ToInt64().ToString("X2"));
                 throw new NotSupportedException("Failed to use signature for Class::Init and a substitute cannot be found, please create an issue and report your unity version & game");
             }
-            // il2cpp_class_has_references is a Class::Init call followed by a read of the flag it sets, so the
-            // first direct call in it is Class::Init. Unlike the signatures this does not depend on which
-            // register the compiler chose for the class pointer.
+            // mono_class_instance_size is a Class::Init call followed by a read of the size field, so the first
+            // direct call in it is Class::Init. Unlike the signatures this does not depend on which register the
+            // compiler chose for the class pointer.
+            //
+            // Not il2cpp_class_has_references: it guards its call on size_inited, so what it calls is
+            // Class::SetupFields, which leaves the vtable and the interface offsets of an uninitialized class empty.
             static nint FindClassInitByExportXref()
             {
-                if (!TryGetIl2CppExport(nameof(IL2CPP.il2cpp_class_has_references), out nint hasReferences))
+                if (!TryGetIl2CppExport("mono_class_instance_size", out nint instanceSize))
                     return 0;
 
-                return XrefScannerLowLevel.CallTargets(hasReferences).FirstOrDefault();
+                return XrefScannerLowLevel.CallTargets(instanceSize).FirstOrDefault();
             }
 
             nint pClassInit = s_ClassInitSignatures
@@ -204,7 +207,7 @@ namespace Il2CppInterop.Runtime.Injection
             {
                 pClassInit = FindClassInitByExportXref();
                 if (pClassInit != 0)
-                    Logger.Instance.LogTrace("Class::Init found through il2cpp_class_has_references");
+                    Logger.Instance.LogTrace("Class::Init found through mono_class_instance_size");
             }
 
             if (pClassInit == 0)

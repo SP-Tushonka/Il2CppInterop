@@ -280,6 +280,8 @@ public static unsafe class IL2CPP
 
     public static T? PointerToValueGeneric<T>(IntPtr objectPointer, bool isFieldPointer, bool valueTypeWouldBeBoxed)
     {
+        // At most one of these two boxes a value type: il2cpp_value_box copies from the address it is
+        // given, so boxing a pointer that is already a box would copy that box's header, not the value.
         if (isFieldPointer)
         {
             if (il2cpp_class_is_valuetype(Il2CppClassPointerStore<T>.NativeClassPtr))
@@ -287,9 +289,10 @@ public static unsafe class IL2CPP
             else
                 objectPointer = *(IntPtr*)objectPointer;
         }
-
-        if (!valueTypeWouldBeBoxed && il2cpp_class_is_valuetype(Il2CppClassPointerStore<T>.NativeClassPtr))
+        else if (!valueTypeWouldBeBoxed && il2cpp_class_is_valuetype(Il2CppClassPointerStore<T>.NativeClassPtr))
+        {
             objectPointer = il2cpp_value_box(Il2CppClassPointerStore<T>.NativeClassPtr, objectPointer);
+        }
 
         if (typeof(T) == typeof(string))
             return (T)(object)Il2CppStringToManaged(objectPointer);

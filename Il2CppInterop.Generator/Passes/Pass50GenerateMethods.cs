@@ -203,6 +203,14 @@ public static class Pass50GenerateMethods
 
                     }
 
+                    // Only a receiver that can be a boxed value type needs its this pointer decided at run time,
+                    // and a value type can only be reached virtually through an interface or through the three
+                    // classes every value type derives from.
+                    var receiverCanBeAValueType = !originalMethod.IsStatic &&
+                                                  (typeContext.OriginalType.IsInterface ||
+                                                   typeContext.OriginalType.FullName is "System.Object" or "System.ValueType" or "System.Enum");
+                    CilLocalVariable? resolvedMethod = null;
+
                     if (!originalMethod.DeclaringType!.IsSealed && (methodRewriteContext.InterfaceMethodInfoPointerField != null || !originalMethod.IsFinal) &&
                         ((originalMethod.IsVirtual && !originalMethod.DeclaringType.IsValueType()) || originalMethod.IsAbstract))
                     {
@@ -217,6 +225,15 @@ public static class Pass50GenerateMethods
                         else
                             bodyBuilder.Add(OpCodes.Ldsfld, methodRewriteContext.InterfaceMethodInfoPointerField ?? methodRewriteContext.NonGenericMethodInfoPointerField);
                         bodyBuilder.Add(OpCodes.Call, imports.IL2CPP_il2cpp_object_get_virtual_method.Value);
+
+                        if (receiverCanBeAValueType)
+                        {
+                            // Keep what the dispatch resolved to: which method it is decides what this has to be
+                            resolvedMethod = new CilLocalVariable(imports.Module.IntPtr());
+                            bodyBuilder.Owner.LocalVariables.Add(resolvedMethod);
+                            bodyBuilder.Add(OpCodes.Dup);
+                            bodyBuilder.Add(OpCodes.Stloc, resolvedMethod);
+                        }
                     }
                     else if (methodRewriteContext.GenericInstantiationsStoreSelfSubstRef != null)
                     {
@@ -230,12 +247,22 @@ public static class Pass50GenerateMethods
                     }
 
                     if (originalMethod.IsStatic)
+                    {
                         bodyBuilder.Add(OpCodes.Ldc_I4_0);
+                    }
                     else if (typeContext.OriginalType.IsInterface)
-                        bodyBuilder.EmitInterfaceThisToPointer(imports);
+                    {
+                        bodyBuilder.EmitInterfaceThisToPointer(imports, resolvedMethod);
+                    }
                     else
+                    {
                         bodyBuilder.EmitObjectToPointer(originalMethod.DeclaringType.ToTypeSignature(), newMethod.DeclaringType!.ToTypeSignature(), typeContext, 0,
                             true, false, true, true, out _);
+
+                        // Object, ValueType and Enum are the other three wrappers that can be holding a box
+                        if (resolvedMethod != null)
+                            bodyBuilder.EmitUnboxThisForVirtualInvoke(imports, resolvedMethod);
+                    }
 
                     bodyBuilder.Add(OpCodes.Ldloc, argArray);
                     bodyBuilder.Add(OpCodes.Ldloca, exceptionLocal);

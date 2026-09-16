@@ -86,14 +86,44 @@ public static class ILGeneratorEx
     }
 
     // A boxed struct is unboxed because il2cpp_runtime_invoke hands the pointer straight to the struct method
-    public static void EmitInterfaceThisToPointer(this ILProcessor body, RuntimeAssemblyReferences imports)
+    public static void EmitInterfaceThisToPointer(this ILProcessor body, RuntimeAssemblyReferences imports,
+        CilLocalVariable? resolvedMethod = null)
     {
-        var referenceType = new CilInstructionLabel();
         body.Add(OpCodes.Ldarg_0);
         body.Add(OpCodes.Castclass, imports.Il2CppObjectBase.ToTypeDefOrRef());
         body.Add(OpCodes.Call, imports.IL2CPP_Il2CppObjectBaseToPtrNotNull.Value);
-        body.Add(OpCodes.Dup);
-        body.Add(OpCodes.Call, imports.IL2CPP_il2cpp_object_get_class.Value);
+        body.EmitUnboxThisForVirtualInvoke(imports, resolvedMethod);
+    }
+
+    /// <summary>
+    ///     Turns the object pointer on the stack into the this pointer
+    ///     <c>il2cpp_runtime_invoke</c> wants for the method it is about to be passed with.
+    /// </summary>
+    /// <remarks>
+    ///     il2cpp_object_get_virtual_method hands back the implementing method's MethodInfo, and
+    ///     il2cpp_runtime_invoke dispatches through its methodPointer rather than through the vtable entry's
+    ///     adjustor thunk. A method that resolved onto a value type therefore has to be given the unboxed data,
+    ///     exactly as a call on the value type's own wrapper would give it. What the method resolved to decides
+    ///     this and not what the receiver holds: a struct that does not override the method resolves onto the
+    ///     reference type declaring it, which wants the box. Only where nothing was resolved is there no better
+    ///     question to ask than the receiver's own class.
+    /// </remarks>
+    public static void EmitUnboxThisForVirtualInvoke(this ILProcessor body, RuntimeAssemblyReferences imports,
+        CilLocalVariable? resolvedMethod)
+    {
+        var referenceType = new CilInstructionLabel();
+
+        if (resolvedMethod != null)
+        {
+            body.Add(OpCodes.Ldloc, resolvedMethod);
+            body.Add(OpCodes.Call, imports.IL2CPP_il2cpp_method_get_class.Value);
+        }
+        else
+        {
+            body.Add(OpCodes.Dup);
+            body.Add(OpCodes.Call, imports.IL2CPP_il2cpp_object_get_class.Value);
+        }
+
         body.Add(OpCodes.Call, imports.IL2CPP_il2cpp_class_is_valuetype.Value);
         body.Add(OpCodes.Brfalse_S, referenceType);
         body.Add(OpCodes.Call, imports.IL2CPP_il2cpp_object_unbox.Value);

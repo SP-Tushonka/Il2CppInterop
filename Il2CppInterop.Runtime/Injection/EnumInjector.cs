@@ -199,7 +199,8 @@ public static unsafe class EnumInjector
         var baseEnum =
             UnityVersionHandler.Wrap((Il2CppClass*)Il2CppClassPointerStore<Il2CppSystem.Enum>.NativeClassPtr);
 
-        InjectorHelpers.ClassInit(baseEnum.ClassPointer);
+        // The vtable is copied from the base below, so this has to have happened rather than merely been asked for
+        InjectorHelpers.EnsureClassInitialized(baseEnum);
 
         var il2cppEnum = UnityVersionHandler.NewClass(baseEnum.VtableCount);
         var elementClass =

@@ -195,8 +195,9 @@ public static unsafe partial class ClassInjector
 
         InjectorHelpers.Setup();
 
-        // Initialize the vtable of all base types (Class::Init is recursive internally)
-        InjectorHelpers.ClassInit(baseClassPointer.ClassPointer);
+        // Initialize the vtable of all base types (Class::Init is recursive internally). Everything below reads the
+        // base class as a built class, so this has to have happened rather than merely been asked for.
+        InjectorHelpers.EnsureClassInitialized(baseClassPointer);
 
         if (baseClassPointer.ValueType || baseClassPointer.EnumType)
             throw new ArgumentException($"Base class {baseType} is value type and can't be inherited from");

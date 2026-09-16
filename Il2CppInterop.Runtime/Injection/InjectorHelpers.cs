@@ -146,6 +146,39 @@ namespace Il2CppInterop.Runtime.Injection
         internal delegate void d_ClassInit(Il2CppClass* klass);
         internal static d_ClassInit ClassInit;
 
+        private static d_ClassInit? s_ClassInitFallback;
+
+        /// <summary>
+        /// Initializes a class that is about to be read as a class, rather than merely asked to initialize.
+        /// </summary>
+        /// <remarks>
+        /// A class the game has not used yet carries an empty vtable and no interface offsets, and a reader cannot
+        /// tell that from a class of abstract methods that implements nothing. Class::Init is resolved by scanning,
+        /// so whether the call did anything is not known until the class says so: proving it on the class in hand is
+        /// the only check that does not rest on the scan having been right.
+        /// </remarks>
+        internal static void EnsureClassInitialized(INativeClassStruct klass)
+        {
+            // Either flag means the vtable has been built: the class struct before 22_0 has no vtable flag to report
+            // and the handlers answer false for it, and Class::Init builds the vtable before it marks the class
+            static bool IsBuilt(INativeClassStruct klass) => klass.IsVtableInitialized || klass.Initialized;
+
+            ClassInit(klass.ClassPointer);
+            if (IsBuilt(klass)) return;
+
+            // A substitute calls Class::Init itself, which recovers a scan that landed on a function that does not
+            s_ClassInitFallback ??= TryGetIl2CppExport("mono_class_instance_size", out nint substitute)
+                ? Marshal.GetDelegateForFunctionPointer<d_ClassInit>(substitute)
+                : null;
+
+            s_ClassInitFallback?.Invoke(klass.ClassPointer);
+            if (IsBuilt(klass)) return;
+
+            throw new NotSupportedException(
+                $"Class {Marshal.PtrToStringUTF8(klass.Name)} could not be initialized in il2cpp, so its vtable was " +
+                "never built. Please create an issue and report your unity version & game");
+        }
+
         private static readonly MemoryUtils.SignatureDefinition[] s_ClassInitSignatures =
         {
             new MemoryUtils.SignatureDefinition

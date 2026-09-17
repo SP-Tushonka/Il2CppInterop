@@ -415,12 +415,17 @@ public static unsafe partial class ClassInjector
         {
             if (!extendsAbstract) throw new NullReferenceException("VTable method was null even though base type isn't abstract");
 
+            if (abstractV >= abstractBaseMethods.Count) throw new Exception($"abstract slot {position} has no base method");
+
             var nativeMethodInfoStruct = abstractBaseMethods[abstractV++];
 
             vTablePointer[position].method = nativeMethodInfoStruct.MethodInfoPointer;
             vTablePointer[position].methodPtr = nativeMethodInfoStruct.MethodPointer;
             return nativeMethodInfoStruct;
         }
+
+        var boundMethods = new HashSet<MethodInfo>();
+        var unboundSlots = new Dictionary<string, string>();
 
         for (var i = 0; i < baseClassPointer.VtableCount; i++)
         {
@@ -444,6 +449,11 @@ public static unsafe partial class ClassInjector
 
             var methodName = Marshal.PtrToStringUTF8(baseMethod.Name);
 
+            if (string.IsNullOrEmpty(methodName))
+            {
+                continue;
+            }
+
             if (methodName == "Finalize") // slot number is not static
             {
                 vTablePointer[i].method = methodPointerArray[0];
@@ -456,13 +466,24 @@ public static unsafe partial class ClassInjector
             for (var j = 0; j < baseMethod.ParametersCount; j++)
             {
                 var parameterInfo = UnityVersionHandler.Wrap(baseMethod.Parameters, j);
-                var parameterType = SystemTypeFromIl2CppType(parameterInfo.ParameterType);
 
-                parameters[j] = parameterType;
+                // Generic parameters and wrapped value types have no resolvable System.Type, the override is then matched by name
+                try
+                {
+                    parameters[j] = SystemTypeFromIl2CppType(parameterInfo.ParameterType);
+                }
+                catch (Exception)
+                {
+                    parameters = null;
+                    break;
+                }
             }
 
             var monoMethodImplementation = FindBaseInterfaceImplementation(type, baseClassPointer, i, baseMethod.ParametersCount)
-                ?? type.GetMethod(methodName, BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.DeclaredOnly, parameters);
+                ?? (parameters != null
+                    ? type.GetMethod(methodName, BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.DeclaredOnly, parameters)
+                    : null)
+                ?? FindOverrideByName(type, methodName, baseMethod);
 
             if (monoMethodImplementation != null && monoMethodImplementation.IsAbstract)
             {
@@ -473,13 +494,27 @@ public static unsafe partial class ClassInjector
             if (methodPointerArrayIndex >= 0)
             {
                 var method = UnityVersionHandler.Wrap(methodPointerArray[methodPointerArrayIndex + methodsOffset]);
-                vTablePointer[i].method = methodPointerArray[methodPointerArrayIndex + methodsOffset];
-                vTablePointer[i].methodPtr = method.MethodPointer;
+
+                // A generic method has no trampoline, the base entry stays because an empty slot would crash the call
+                if (method.MethodPointer != IntPtr.Zero)
+                {
+                    vTablePointer[i].method = methodPointerArray[methodPointerArrayIndex + methodsOffset];
+                    vTablePointer[i].methodPtr = method.MethodPointer;
+                }
+            }
+
+            if (monoMethodImplementation == null)
+            {
+                unboundSlots.TryAdd(methodName, DescribeSignature(methodName, baseMethod));
+            }
+            else
+            {
+                boundMethods.Add(monoMethodImplementation);
             }
 
             if (vTablePointer[i].method == default || vTablePointer[i].methodPtr == IntPtr.Zero)
             {
-                throw new Exception("No method found for vtable entry " + methodName);
+                throw new Exception($"No method found for vtable entry {methodName}({DescribeParameters(baseMethod)})");
             }
         }
 
@@ -498,8 +533,19 @@ public static unsafe partial class ClassInjector
                 var methodIndex = FindInterfaceImplementation(mapping, methodName, vTableMethod.ParametersCount, vTableMethod.IsGeneric, eligibleMethods, methodsOffset, infos);
                 if (methodIndex < 0)
                 {
-                    Logger.Instance.LogWarning("Type {Type} does not implement {Method} of il2cpp interface {Interface}, a call from il2cpp to it will crash",
-                        type, methodName, Marshal.PtrToStringUTF8(interfaces[i].Name));
+                    var inherited = FindBaseClassMethod(baseClassPointer, methodName, vTableMethod.ParametersCount);
+                    if (inherited != null)
+                    {
+                        vTablePointer[index].method = inherited.MethodInfoPointer;
+                        vTablePointer[index].methodPtr = inherited.MethodPointer;
+                        ++index;
+                        continue;
+                    }
+
+                    Logger.Instance.LogWarning(
+                        "Type {Type} does not implement {Interface}.{Method} of il2cpp, a call from il2cpp to it will crash. Declare `{Signature}`{NearMisses}",
+                        type, Marshal.PtrToStringUTF8(interfaces[i].Name), methodName, DescribeSignature(methodName, vTableMethod),
+                        DescribeNearMisses(type, methodName));
                     ++index;
                     continue;
                 }
@@ -507,9 +553,16 @@ public static unsafe partial class ClassInjector
                 var method = methodPointerArray[methodIndex];
                 vTablePointer[index].method = method;
                 vTablePointer[index].methodPtr = UnityVersionHandler.Wrap(method).MethodPointer;
+                if (methodIndex - methodsOffset >= 0 && methodIndex - methodsOffset < eligibleMethods.Length)
+                {
+                    boundMethods.Add(eligibleMethods[methodIndex - methodsOffset]);
+                }
+
                 ++index;
             }
         }
+
+        ReportUnboundOverrides(type, boundMethods, unboundSlots);
 
         var interfaceCount = baseClassPointer.InterfaceCount + interfaces.Count;
         classPointer.InterfaceCount = (ushort)interfaceCount;
@@ -560,13 +613,180 @@ public static unsafe partial class ClassInjector
 
     private static bool IsTypeSupported(Type type)
     {
-        if (type.IsValueType ||
-            type == typeof(string) ||
-            type.IsGenericParameter) return true;
+        if (type == typeof(string) || type == typeof(void) || type.IsGenericParameter) return true;
+        if (type.IsValueType) return type.IsPrimitive || IsIl2CppBacked(type);
         if (type.IsByRef) return IsTypeSupported(type.GetElementType());
         if (type.IsInterface) return IsIl2CppInterface(type);
 
-        return typeof(Il2CppObjectBase).IsAssignableFrom(type);
+        // An il2cpp object the trampoline has to rebuild needs the pointer constructor
+        return typeof(Il2CppObjectBase).IsAssignableFrom(type) && HasPointerConstructor(type);
+    }
+
+    private static bool HasPointerConstructor(Type type)
+    {
+        return type.GetConstructors().Any(it =>
+        {
+            var parameters = it.GetParameters();
+            return parameters.Length == 1 && parameters[0].ParameterType == typeof(IntPtr);
+        });
+    }
+
+    // Il2cpp parameter types that System.Type cannot express, a generic parameter or a wrapped value type such as Nullable<T>,
+    // leave the signature lookup no way to match. The override is found by name and arity, compared by il2cpp class when ambiguous.
+    private static MethodInfo? FindOverrideByName(Type type, string methodName, INativeMethodInfoStruct baseMethod)
+    {
+        var candidates = type
+            .GetMethods(BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.DeclaredOnly)
+            .Where(it => it.Name == methodName && it.GetParameters().Length == baseMethod.ParametersCount
+                         && it.IsGenericMethod == baseMethod.IsGeneric)
+            .ToArray();
+
+        var baseClasses = new IntPtr[baseMethod.ParametersCount];
+        for (var i = 0; i < baseMethod.ParametersCount; i++)
+        {
+            // A parameter of an injected type has no class to compare against, the name match then decides on its own
+            try
+            {
+                baseClasses[i] = IL2CPP.il2cpp_class_from_il2cpp_type((IntPtr)UnityVersionHandler.Wrap(baseMethod.Parameters, i).ParameterType);
+            }
+            catch (Exception)
+            {
+                baseClasses[i] = IntPtr.Zero;
+            }
+        }
+
+        var matches = candidates.Where(it => ParametersMatch(it, baseClasses)).ToArray();
+        if (matches.Length == 1)
+        {
+            return matches[0];
+        }
+
+        if (matches.Length > 1 || candidates.Length != 1)
+        {
+            return null;
+        }
+
+        // The il2cpp classes did not confirm the one candidate, binding it is still better than an empty slot
+        Logger.Instance.LogDebug("Bound {Method} of {Type} to the il2cpp slot by name, its parameters could not be confirmed",
+            candidates[0], type);
+        return candidates[0];
+    }
+
+    // A method that matches the name of an il2cpp slot but not its signature is silently never called,
+    // which is the easiest mistake to make when porting a type, so it is reported with the signature to write.
+    private static void ReportUnboundOverrides(Type type, HashSet<MethodInfo> boundMethods, Dictionary<string, string> unboundSlots)
+    {
+        foreach (var declared in type.GetMethods(BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.DeclaredOnly)
+                     .GroupBy(it => it.Name))
+        {
+            if (!unboundSlots.TryGetValue(declared.Key, out var signature) || declared.Any(boundMethods.Contains))
+            {
+                continue;
+            }
+
+            Logger.Instance.LogWarning(
+                "Type {Type} declares {Method} but no overload matches an il2cpp method, so the game keeps calling the base one. Declare `{Signature}`{NearMisses}",
+                type, declared.Key, signature, DescribeNearMisses(type, declared.Key));
+        }
+    }
+
+    // The C# declaration an injected type needs for an il2cpp slot, so a mismatch says what to write instead.
+    // Nothing here may throw, it only runs to explain a problem that already happened.
+    private static string DescribeSignature(string methodName, INativeMethodInfoStruct method)
+    {
+        try
+        {
+            var parameters = new string[method.ParametersCount];
+            for (var i = 0; i < method.ParametersCount; i++)
+            {
+                parameters[i] = $"{DescribeManagedType(UnityVersionHandler.Wrap(method.Parameters, i).ParameterType)} arg{i}";
+            }
+
+            return $"public {DescribeManagedType(method.ReturnType)} {methodName}({string.Join(", ", parameters)})";
+        }
+        catch (Exception)
+        {
+            return methodName;
+        }
+    }
+
+    private static string DescribeNearMisses(Type type, string methodName)
+    {
+        var declared = type.GetMethods(BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.DeclaredOnly)
+            .Where(it => it.Name == methodName)
+            .Select(it => $"{it.ReturnType.Name} {it.Name}({string.Join(", ", it.GetParameters().Select(p => p.ParameterType.Name))})")
+            .ToArray();
+
+        return declared.Length == 0 ? string.Empty : $", found {string.Join(" and ", declared)}";
+    }
+
+    // Generated code names a game type as it is and a framework type under Il2Cpp, which is what the hint has to show
+    private static string DescribeManagedType(Il2CppTypeStruct* type)
+    {
+        try
+        {
+            var fullName = GetIl2CppTypeFullName(type).Split(',')[0];
+            return Type.GetType("Il2Cpp" + fullName) != null ? "Il2Cpp" + fullName : fullName;
+        }
+        catch (Exception)
+        {
+            return "?";
+        }
+    }
+
+    private static string DescribeParameters(INativeMethodInfoStruct method)
+    {
+        try
+        {
+            var names = new string[method.ParametersCount];
+            for (var i = 0; i < method.ParametersCount; i++)
+            {
+                names[i] = GetIl2CppTypeFullName(UnityVersionHandler.Wrap(method.Parameters, i).ParameterType).Split(',')[0];
+            }
+
+            return string.Join(", ", names);
+        }
+        catch (Exception)
+        {
+            return $"{method.ParametersCount} parameters";
+        }
+    }
+
+    private static bool ParametersMatch(MethodInfo candidate, IntPtr[] baseClasses)
+    {
+        var parameters = candidate.GetParameters();
+        for (var i = 0; i < parameters.Length; i++)
+        {
+            IntPtr candidateClass;
+            try
+            {
+                candidateClass = Il2CppClassPointerStore.GetNativeClassPointer(parameters[i].ParameterType);
+            }
+            catch (Exception)
+            {
+                return false;
+            }
+
+            if (candidateClass == IntPtr.Zero || candidateClass != baseClasses[i])
+            {
+                return false;
+            }
+        }
+
+        return true;
+    }
+
+    // A value type declared in a plugin assembly has no il2cpp class, converting a method that uses it would crash on the null pointer
+    private static bool IsIl2CppBacked(Type type)
+    {
+        try
+        {
+            return Il2CppClassPointerStore.GetNativeClassPointer(type) != IntPtr.Zero;
+        }
+        catch (Exception)
+        {
+            return false;
+        }
     }
 
     private static bool IsIl2CppInterface(Type type)
@@ -675,6 +895,28 @@ public static unsafe partial class ClassInjector
         }
 
         return infos.TryGetValue((methodName, parameterCount, isGeneric), out var methodIndex) ? methodIndex : -1;
+    }
+
+    // An interface method implemented by a base class is not in this type's own method table, the base class carries it
+    private static INativeMethodInfoStruct FindBaseClassMethod(INativeClassStruct klass, string methodName, int parameterCount)
+    {
+        var current = klass;
+        while (current != null)
+        {
+            for (var i = 0; i < current.MethodCount; i++)
+            {
+                var method = UnityVersionHandler.Wrap(current.Methods[i]);
+                if (method.MethodPointer == IntPtr.Zero || method.ParametersCount != parameterCount)
+                    continue;
+
+                if (Marshal.PtrToStringUTF8(method.Name) == methodName)
+                    return method;
+            }
+
+            current = current.Parent != default ? UnityVersionHandler.Wrap(current.Parent) : null;
+        }
+
+        return null;
     }
 
     private static bool IsFieldEligible(FieldInfo field)
@@ -926,6 +1168,8 @@ public static unsafe partial class ClassInjector
             body.Emit(OpCodes.Stfld, field);
         }
 
+        body.Emit(OpCodes.Dup);
+        body.Emit(OpCodes.Call, typeof(ClassInjector).GetMethod(nameof(RunNativeBaseConstructor))!);
         body.Emit(OpCodes.Call, typeof(ClassInjector).GetMethod(nameof(ProcessNewObject))!);
 
         body.Emit(OpCodes.Ret);
@@ -933,6 +1177,31 @@ public static unsafe partial class ClassInjector
         var @delegate = (VoidCtorDelegate)method.CreateDelegate(typeof(VoidCtorDelegate));
         GCHandle.Alloc(@delegate); // pin it forever
         return @delegate;
+    }
+
+    // il2cpp code that creates an injected type (new T() in a game factory) only reaches the empty constructor,
+    // so the game base constructor C# would chain to has to run here or the base fields stay uninitialized
+    public static void RunNativeBaseConstructor(Il2CppObjectBase obj)
+    {
+        var type = obj.GetType().BaseType;
+        while (type != null && IsManagedTypeInjected(type))
+            type = type.BaseType;
+        if (type == null || type == typeof(Il2CppObjectBase) || type == typeof(Il2CppSystem.Object))
+            return;
+
+        var classPointer = Il2CppClassPointerStore.GetNativeClassPointer(type);
+        if (classPointer == IntPtr.Zero)
+            return;
+        var constructor = IL2CPP.il2cpp_class_get_method_from_name(classPointer, ".ctor", 0);
+        if (constructor == IntPtr.Zero)
+        {
+            Logger.Instance.LogTrace("{Type} has no parameterless il2cpp constructor to run for {Injected}", type, obj.GetType());
+            return;
+        }
+
+        var exception = IntPtr.Zero;
+        IL2CPP.il2cpp_runtime_invoke(constructor, obj.Pointer, (void**)IntPtr.Zero, ref exception);
+        Il2CppException.RaiseExceptionIfNecessary(exception);
     }
 
     public static void Finalize(IntPtr ptr)
@@ -1061,6 +1330,17 @@ public static unsafe partial class ClassInjector
         return @delegate;
     }
 
+    public static void GuardStack(string method)
+    {
+        if (System.Runtime.CompilerServices.RuntimeHelpers.TryEnsureSufficientExecutionStack())
+        {
+            return;
+        }
+
+        throw new InsufficientExecutionStackException(
+            $"Injected method {method} ran out of stack. It is most likely recursing into itself, which kills the process. Stack:{Environment.NewLine}{new StackTrace(false)}");
+    }
+
     private static FieldInfo ClassPointerField(Type type)
     {
         return typeof(Il2CppClassPointerStore<>).MakeGenericType(type).GetField(nameof(Il2CppClassPointerStore<int>.NativeClassPtr))!;
@@ -1112,6 +1392,10 @@ public static unsafe partial class ClassInjector
 
         body.BeginExceptionBlock();
 
+        // An injected override that calls back into itself blows the stack, which kills the process with no log at all
+        body.Emit(OpCodes.Ldstr, $"{monoMethod.DeclaringType}.{monoMethod.Name}");
+        body.Emit(OpCodes.Call, typeof(ClassInjector).GetMethod(nameof(GuardStack))!);
+
         body.Emit(OpCodes.Ldarg, argumentOffset);
         body.Emit(OpCodes.Call,
             typeof(ClassInjectorBase).GetMethod(nameof(ClassInjectorBase.GetMonoObjectFromIl2CppPointer))!);
@@ -1127,7 +1411,7 @@ public static unsafe partial class ClassInjector
                 body.Emit(OpCodes.Ldc_I8, Il2CppClassPointerStore.GetNativeClassPointer(parameter).ToInt64());
                 body.Emit(OpCodes.Conv_I);
                 body.Emit(TrampolineHelpers.IsPassedByValue(parameter) ? OpCodes.Ldarga_S : OpCodes.Ldarg, i + argumentOffset);
-                body.Emit(OpCodes.Call, typeof(IL2CPP).GetMethod(nameof(IL2CPP.il2cpp_value_box)));
+                body.Emit(OpCodes.Call, typeof(IL2CPP).GetMethod(IL2CPP.IsIl2CppNullable(parameter) ? nameof(IL2CPP.BoxNullable) : nameof(IL2CPP.il2cpp_value_box)));
             }
             else
             {

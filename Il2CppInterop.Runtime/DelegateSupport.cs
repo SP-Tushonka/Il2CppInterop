@@ -31,6 +31,10 @@ public static class DelegateSupport
     // One il2cpp delegate per managed delegate and target type, so removing from an il2cpp event finds what was added
     private static readonly ConditionalWeakTable<Delegate, ConcurrentDictionary<Type, Il2CppObjectBase>> ConvertedDelegates = new();
 
+    // Two single delegates over the same target and method are equal in C#, `x -= new Action(Handler)` relies on that
+    private static readonly ConditionalWeakTable<object, ConcurrentDictionary<(MethodInfo, Type), Il2CppObjectBase>> ConvertedByTarget = new();
+    private static readonly ConcurrentDictionary<(MethodInfo, Type), Il2CppObjectBase> ConvertedStatic = new();
+
     internal static Type GetOrCreateDelegateType(MethodSignature signature, MethodInfo managedMethod)
     {
         return ourDelegateTypes.GetOrAdd(signature,
@@ -240,6 +244,15 @@ public static class DelegateSupport
     {
         if (@delegate == null)
             return null;
+
+        if (@delegate.GetInvocationList().Length == 1)
+        {
+            var key = (@delegate.Method, typeof(TIl2Cpp));
+            var byMethod = @delegate.Target == null
+                ? ConvertedStatic
+                : ConvertedByTarget.GetValue(@delegate.Target, static _ => new ConcurrentDictionary<(MethodInfo, Type), Il2CppObjectBase>());
+            return (TIl2Cpp)byMethod.GetOrAdd(key, static (_, source) => ConvertDelegateUncached<TIl2Cpp>(source), @delegate);
+        }
 
         var converted = ConvertedDelegates.GetValue(@delegate, static _ => new ConcurrentDictionary<Type, Il2CppObjectBase>());
         if (converted.TryGetValue(typeof(TIl2Cpp), out var existing))

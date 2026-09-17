@@ -157,6 +157,16 @@ public static class DelegateSupport
             {
                 bodyBuilder.Emit(OpCodes.Call, typeof(Il2CppObjectPool).GetMethod(nameof(Il2CppObjectPool.Get))!.MakeGenericMethod(parameterType));
             }
+            else if (parameterType.IsSubclassOf(typeof(ValueType)))
+            {
+                // A wrapped struct arrives as its data, not as a box the wrapper could point at
+                bodyBuilder.Emit(OpCodes.Pop);
+                bodyBuilder.Emit(OpCodes.Ldc_I8, Il2CppClassPointerStore.GetNativeClassPointer(parameterType).ToInt64());
+                bodyBuilder.Emit(OpCodes.Conv_I);
+                bodyBuilder.Emit(OpCodes.Ldarg, i + 1);
+                bodyBuilder.Emit(OpCodes.Call, typeof(IL2CPP).GetMethod(IL2CPP.IsIl2CppNullable(parameterType) ? nameof(IL2CPP.BoxNullable) : nameof(IL2CPP.il2cpp_value_box))!);
+                bodyBuilder.Emit(OpCodes.Newobj, parameterType.GetConstructor(new[] { typeof(IntPtr) })!);
+            }
             else if (!parameterType.IsValueType)
             {
                 var labelNull = bodyBuilder.DefineLabel();
@@ -258,9 +268,10 @@ public static class DelegateSupport
                 throw new ArgumentException(
                     $"Delegate has unsubstituted generic parameter ({parameterType}) which is not supported");
 
-            if (parameterType.BaseType == typeof(ValueType))
+            // Fully shared generic invokes pass even small structs by pointer, so a register sized struct is ambiguous
+            if (TrampolineHelpers.IsPassedByValue(parameterType))
                 throw new ArgumentException(
-                    $"Delegate has parameter of type {parameterType} (non-blittable struct) which is not supported");
+                    $"Delegate has parameter of type {parameterType} (register sized struct) which is not supported");
         }
 
         var classTypePtr = Il2CppClassPointerStore.GetNativeClassPointer(typeof(TIl2Cpp));

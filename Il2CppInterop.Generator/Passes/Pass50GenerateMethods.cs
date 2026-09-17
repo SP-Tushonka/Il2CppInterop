@@ -224,7 +224,7 @@ public static class Pass50GenerateMethods
                                     methodRewriteContext.GenericInstantiationsStoreSelfSubstMethodRef));
                         else
                             bodyBuilder.Add(OpCodes.Ldsfld, methodRewriteContext.InterfaceMethodInfoPointerField ?? methodRewriteContext.NonGenericMethodInfoPointerField);
-                        bodyBuilder.Add(OpCodes.Call, imports.IL2CPP_il2cpp_object_get_virtual_method.Value);
+                        bodyBuilder.Add(OpCodes.Call, imports.IL2CPP_ResolveVirtualMethod.Value);
 
                         if (receiverCanBeAValueType)
                         {

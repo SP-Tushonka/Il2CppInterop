@@ -54,7 +54,7 @@ public class RuntimeAssemblyReferences
     public Lazy<IMethodDefOrRef> IL2CPP_il2cpp_method_get_class { get; private set; }
     public Lazy<IMethodDefOrRef> IL2CPP_il2cpp_class_is_valuetype { get; private set; }
     public Lazy<IMethodDefOrRef> Il2CppException_RaiseExceptionIfNecessary { get; private set; }
-    public Lazy<IMethodDefOrRef> IL2CPP_il2cpp_object_get_virtual_method { get; private set; }
+    public Lazy<IMethodDefOrRef> IL2CPP_ResolveVirtualMethod { get; private set; }
     public Lazy<IMethodDefOrRef> IL2CPP_GetIl2CppField { get; private set; }
     public Lazy<IMethodDefOrRef> IL2CPP_GetIl2CppNestedType { get; private set; }
     public Lazy<IMethodDefOrRef> IL2CPP_GetIl2CppClass { get; private set; }
@@ -399,9 +399,8 @@ public class RuntimeAssemblyReferences
             return mr;
         });
 
-        IL2CPP_il2cpp_object_get_virtual_method = new Lazy<IMethodDefOrRef>(() =>
+        IL2CPP_ResolveVirtualMethod = new Lazy<IMethodDefOrRef>(() =>
         {
-            // Resolves like il2cpp_object_get_virtual_method except for base calls from injected overrides
             var mr = ReferenceCreator.CreateStaticMethodReference("ResolveVirtualMethod", ResolveType("System.IntPtr"),
                 ResolveType("Il2CppInterop.Runtime.IL2CPP").ToTypeDefOrRef(), ResolveType("System.IntPtr"), ResolveType("System.IntPtr"));
             return mr;

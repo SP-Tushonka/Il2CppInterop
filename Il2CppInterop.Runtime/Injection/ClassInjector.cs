@@ -162,6 +162,23 @@ public static unsafe partial class ClassInjector
 
     public static void RegisterTypeInIl2Cpp(Type type, RegisterTypeOptions options)
     {
+        try
+        {
+            RegisterTypeInIl2CppInternal(type, options);
+        }
+        catch (Exception exception)
+        {
+            if (type != null)
+            {
+                lock (InjectedTypes) InjectedTypes.Remove(type.FullName);
+            }
+
+            throw new Exception($"Injecting {type?.FullName} into il2cpp failed: {exception.Message}", exception);
+        }
+    }
+
+    private static void RegisterTypeInIl2CppInternal(Type type, RegisterTypeOptions options)
+    {
         var interfaces = options.Interfaces;
         if (interfaces == null)
         {

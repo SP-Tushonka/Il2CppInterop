@@ -1,5 +1,6 @@
-using System;
+﻿using System;
 using System.Collections.Concurrent;
+using System.Diagnostics;
 using System.Collections.Generic;
 using System.Linq;
 using System.Reflection;
@@ -240,7 +241,11 @@ public static unsafe partial class ClassInjector
         }
 
         var interfaceFunctionCount = interfaces.Sum(i => i.MethodCount);
-        var classPointer = UnityVersionHandler.NewClass(baseClassPointer.VtableCount + interfaceFunctionCount);
+        var eligibleMethods = type.GetMethods(BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.DeclaredOnly).Where(IsMethodEligible).ToArray();
+        var abstractMethods = eligibleMethods.Where(x => x.IsAbstract).ToArray();
+
+        // The abstract methods get a vtable slot each, leaving them out of the allocation corrupts the heap past the class
+        var classPointer = UnityVersionHandler.NewClass(baseClassPointer.VtableCount + interfaceFunctionCount + abstractMethods.Length);
 
         classPointer.Image = InjectorHelpers.InjectedImage.ImagePointer;
         classPointer.Parent = baseClassPointer.ClassPointer;
@@ -262,7 +267,12 @@ public static unsafe partial class ClassInjector
 
         classPointer.Flags = baseClassPointer.Flags; // todo: adjust flags?
 
-        if (!type.IsAbstract) classPointer.Flags &= ~Il2CppClassAttributes.TYPE_ATTRIBUTE_ABSTRACT;
+        // An injected abstract class leaves its abstract methods as null vtable slots, a derived injection only fills those
+        // when the flag says the base is abstract
+        if (type.IsAbstract)
+            classPointer.Flags |= Il2CppClassAttributes.TYPE_ATTRIBUTE_ABSTRACT;
+        else
+            classPointer.Flags &= ~Il2CppClassAttributes.TYPE_ATTRIBUTE_ABSTRACT;
 
         var fieldsToInject = type
             .GetFields(BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.DeclaredOnly)
@@ -322,7 +332,6 @@ public static unsafe partial class ClassInjector
         classPointer.InstanceSize = (uint)(fieldOffset + sizeof(InjectedClassData));
         classPointer.ActualSize = classPointer.InstanceSize;
 
-        var eligibleMethods = type.GetMethods(BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.DeclaredOnly).Where(IsMethodEligible).ToArray();
         var methodsOffset = type.IsAbstract ? 1 : 2; // 1 is the finalizer, 1 is empty ctor
         var methodCount = methodsOffset + eligibleMethods.Length;
 
@@ -347,8 +356,6 @@ public static unsafe partial class ClassInjector
                 InflatedMethodFromContextDictionary.Add((IntPtr)methodInfoPointer, (methodInfo, new Dictionary<IntPtr, IntPtr>()));
             infos[(methodInfo.Name, methodInfo.GetParameters().Length, methodInfo.IsGenericMethod)] = i + methodsOffset;
         }
-
-        var abstractMethods = eligibleMethods.Where(x => x.IsAbstract).ToArray();
 
         var vTablePointer = (VirtualInvokeData*)classPointer.VTable;
         var baseVTablePointer = (VirtualInvokeData*)baseClassPointer.VTable;

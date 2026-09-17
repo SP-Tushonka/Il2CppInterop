@@ -381,7 +381,8 @@ public static class ILGeneratorEx
             }
             else
             {
-                if (unboxValueType)
+                var isNullable = convertedReturnType is GenericInstanceTypeSignature { GenericType.FullName: "Il2CppSystem.Nullable`1" };
+                if (unboxValueType && !isNullable)
                 {
                     body.Add(OpCodes.Ldloc, pointerVariable);
                 }
@@ -394,7 +395,11 @@ public static class ILGeneratorEx
                             classPointerTypeRef.ToTypeDefOrRef());
                     body.Add(OpCodes.Ldsfld, enclosingType.NewType.DeclaringModule!.DefaultImporter.ImportField(classPointerFieldRef));
                     body.Add(OpCodes.Ldloc, pointerVariable);
-                    body.Add(OpCodes.Call, imports.IL2CPP_il2cpp_value_box.Value);
+                    // il2cpp boxes a nullable as null or its bare payload, the wrapper needs the full Nullable layout
+                    if (isNullable)
+                        body.Add(OpCodes.Call, unboxValueType ? imports.IL2CPP_RebuildNullableBox.Value : imports.IL2CPP_BoxNullable.Value);
+                    else
+                        body.Add(OpCodes.Call, imports.IL2CPP_il2cpp_value_box.Value);
                 }
 
                 body.Add(OpCodes.Newobj,

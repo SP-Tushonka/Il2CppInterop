@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.Linq;
 using System.Reflection;
@@ -293,8 +294,85 @@ public static unsafe class IL2CPP
         return (T)trampoline.CreateDelegate(typeof(T));
     }
 
+    private readonly struct NullableLayout
+    {
+        public readonly IntPtr Constructor;
+        public readonly int HasValueOffset;
+        public readonly int ValueOffset;
+
+        public NullableLayout(IntPtr constructor, int hasValueOffset, int valueOffset)
+        {
+            Constructor = constructor;
+            HasValueOffset = hasValueOffset;
+            ValueOffset = valueOffset;
+        }
+    }
+
+    private static readonly ConcurrentDictionary<IntPtr, NullableLayout> NullableLayouts = new();
+
+    private static NullableLayout GetNullableLayout(IntPtr nullableClass)
+    {
+        return NullableLayouts.GetOrAdd(nullableClass, static klass =>
+        {
+            il2cpp_runtime_class_init(klass);
+            var header = IntPtr.Size * 2;
+            var hasValue = (int)il2cpp_field_get_offset(GetIl2CppField(klass, "hasValue")) - header;
+            var value = (int)il2cpp_field_get_offset(GetIl2CppField(klass, "value")) - header;
+            return new NullableLayout(il2cpp_class_get_method_from_name(klass, ".ctor", 1), hasValue, value);
+        });
+    }
+
+    private static IntPtr CreateNullableBox(IntPtr nullableClass, IntPtr valueData)
+    {
+        var layout = GetNullableLayout(nullableClass);
+        var box = il2cpp_object_new(nullableClass);
+        if (valueData == IntPtr.Zero)
+            return box;
+
+        // The constructor copies in il2cpp code, which keeps the GC write barrier a memcpy would skip
+        var args = stackalloc void*[1];
+        args[0] = (void*)valueData;
+        var exception = IntPtr.Zero;
+        il2cpp_runtime_invoke(layout.Constructor, il2cpp_object_unbox(box), args, ref exception);
+        Il2CppException.RaiseExceptionIfNecessary(exception);
+        return box;
+    }
+
+    /// <summary>
+    /// Boxes the <c>Nullable&lt;T&gt;</c> stored at <paramref name="data"/>. il2cpp_value_box boxes a nullable ECMA style,
+    /// null when empty and only the T payload otherwise, which the wrapper cannot read.
+    /// </summary>
+    public static IntPtr BoxNullable(IntPtr nullableClass, IntPtr data)
+    {
+        var layout = GetNullableLayout(nullableClass);
+        var hasValue = *(byte*)(data + layout.HasValueOffset) != 0;
+        return CreateNullableBox(nullableClass, hasValue ? data + layout.ValueOffset : IntPtr.Zero);
+    }
+
+    /// <summary>
+    /// Turns what il2cpp returned for a <c>Nullable&lt;T&gt;</c>, null or a box holding only the T payload, into a real nullable box.
+    /// </summary>
+    public static IntPtr RebuildNullableBox(IntPtr nullableClass, IntPtr boxed)
+    {
+        return CreateNullableBox(nullableClass, boxed == IntPtr.Zero ? IntPtr.Zero : boxed + IntPtr.Size * 2);
+    }
+
+    internal static bool IsIl2CppNullable(Type type)
+    {
+        return type.IsGenericType && type.GetGenericTypeDefinition().FullName == "Il2CppSystem.Nullable`1";
+    }
+
     public static T? PointerToValueGeneric<T>(IntPtr objectPointer, bool isFieldPointer, bool valueTypeWouldBeBoxed)
     {
+        if (IsIl2CppNullable(typeof(T)))
+        {
+            var nullableClass = Il2CppClassPointerStore<T>.NativeClassPtr;
+            objectPointer = isFieldPointer || !valueTypeWouldBeBoxed
+                ? BoxNullable(nullableClass, objectPointer)
+                : RebuildNullableBox(nullableClass, objectPointer);
+            return Il2CppObjectPool.Get<T>(objectPointer);
+        }
+
         // At most one of these two boxes a value type: il2cpp_value_box copies from the address it is
         // given, so boxing a pointer that is already a box would copy that box's header, not the value.
         if (isFieldPointer)

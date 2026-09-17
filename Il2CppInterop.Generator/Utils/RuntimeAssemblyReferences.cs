@@ -49,6 +49,8 @@ public class RuntimeAssemblyReferences
     public Lazy<IMethodDefOrRef> IL2CPP_il2cpp_runtime_class_init { get; private set; }
     public Lazy<IMethodDefOrRef> IL2CPP_il2cpp_object_unbox { get; private set; }
     public Lazy<IMethodDefOrRef> IL2CPP_il2cpp_value_box { get; private set; }
+    public Lazy<IMethodDefOrRef> IL2CPP_BoxNullable { get; private set; }
+    public Lazy<IMethodDefOrRef> IL2CPP_RebuildNullableBox { get; private set; }
     public Lazy<IMethodDefOrRef> IL2CPP_il2cpp_class_value_size { get; private set; }
     public Lazy<IMethodDefOrRef> IL2CPP_il2cpp_object_get_class { get; private set; }
     public Lazy<IMethodDefOrRef> IL2CPP_il2cpp_method_get_class { get; private set; }
@@ -360,6 +362,20 @@ public class RuntimeAssemblyReferences
         IL2CPP_il2cpp_value_box = new Lazy<IMethodDefOrRef>(() =>
         {
             var mr = ReferenceCreator.CreateStaticMethodReference("il2cpp_value_box", ResolveType("System.IntPtr"),
+                ResolveType("Il2CppInterop.Runtime.IL2CPP").ToTypeDefOrRef(), ResolveType("System.IntPtr"), ResolveType("System.IntPtr"));
+            return mr;
+        });
+
+        IL2CPP_BoxNullable = new Lazy<IMethodDefOrRef>(() =>
+        {
+            var mr = ReferenceCreator.CreateStaticMethodReference("BoxNullable", ResolveType("System.IntPtr"),
+                ResolveType("Il2CppInterop.Runtime.IL2CPP").ToTypeDefOrRef(), ResolveType("System.IntPtr"), ResolveType("System.IntPtr"));
+            return mr;
+        });
+
+        IL2CPP_RebuildNullableBox = new Lazy<IMethodDefOrRef>(() =>
+        {
+            var mr = ReferenceCreator.CreateStaticMethodReference("RebuildNullableBox", ResolveType("System.IntPtr"),
                 ResolveType("Il2CppInterop.Runtime.IL2CPP").ToTypeDefOrRef(), ResolveType("System.IntPtr"), ResolveType("System.IntPtr"));
             return mr;
         });

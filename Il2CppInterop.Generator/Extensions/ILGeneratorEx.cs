@@ -130,6 +130,32 @@ public static class ILGeneratorEx
         referenceType.Instruction = body.Add(OpCodes.Nop);
     }
 
+    // The class pointer store needs a concrete type. Inside a generic struct its own type arrives as the bare definition.
+    private static bool IsClosedType(TypeSignature type)
+    {
+        switch (type)
+        {
+            case GenericInstanceTypeSignature generic:
+                return IsClosedName(generic.GenericType) && generic.TypeArguments.All(IsClosedType);
+            case TypeDefOrRefSignature plain:
+                return plain.Type.Name?.Contains('`') != true && IsClosedName(plain.Type);
+            default:
+                return false;
+        }
+    }
+
+    private static bool IsClosedName(ITypeDescriptor? type)
+    {
+        // Only the declaring types are checked here. A generic instance names its own definition on purpose.
+        for (var current = type?.DeclaringType; current != null; current = current.DeclaringType)
+        {
+            if (current.Name?.Contains('`') == true)
+                return false;
+        }
+
+        return type != null;
+    }
+
     private static IFieldDescriptor GenericClassPointerField(RuntimeAssemblyReferences imports, TypeRewriteContext enclosingType, TypeSignature typeArgument)
     {
         var store = new GenericInstanceTypeSignature(imports.Il2CppClassPointerStore.ToTypeDefOrRef(), imports.Il2CppClassPointerStore.IsValueType(), [typeArgument]);
@@ -270,6 +296,15 @@ public static class ILGeneratorEx
                     body.Add(OpCodes.Ldarg_0);
                 else
                     body.AddLoadArgumentAddress(argumentIndex);
+            }
+            else if (IsClosedType(newType))
+            {
+                // A null wrapper is the struct's default, as it would be in C#
+                body.AddLoadArgument(argumentIndex);
+                body.Add(OpCodes.Ldsfld, GenericClassPointerField(imports, enclosingType, newType));
+                body.Add(OpCodes.Call, imports.IL2CPP_Il2CppValueTypeToPtr.Value);
+                if (unboxNonBlittableType)
+                    body.Add(OpCodes.Call, imports.IL2CPP_il2cpp_object_unbox.Value);
             }
             else
             {

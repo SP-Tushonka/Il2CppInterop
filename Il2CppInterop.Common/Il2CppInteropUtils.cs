@@ -1,4 +1,4 @@
-using System.Reflection;
+﻿using System.Reflection;
 using System.Reflection.Emit;
 
 namespace Il2CppInterop.Common;
@@ -10,11 +10,15 @@ public static class Il2CppInteropUtils
         var body = method.GetMethodBody();
         if (body == null) throw new ArgumentException("Target method may not be abstract");
         var methodModule = method.DeclaringType.Assembly.Modules.Single();
+
+        // A constructor has no generic arguments to ask for, and asking throws instead of answering
+        var genericArguments = method.IsGenericMethod ? method.GetGenericArguments() : null;
+
         foreach (var (opCode, opArg) in MiniIlParser.Decode(body.GetILAsByteArray()))
         {
             if (opCode != OpCodes.Ldsfld) continue;
 
-            var fieldInfo = methodModule.ResolveField((int)opArg, method.DeclaringType.GenericTypeArguments, method.GetGenericArguments());
+            var fieldInfo = methodModule.ResolveField((int)opArg, method.DeclaringType.GenericTypeArguments, genericArguments);
             if (fieldInfo == null) continue;
 
             // Accessors load the cached offset field, the field info pointer lives in the NativeFieldInfoPtr_ field of the same name

@@ -22,8 +22,46 @@ namespace Il2CppInterop.Runtime.Injection.Hooks
         {
             if (InjectorHelpers.s_InjectedClasses.TryGetValue(index, out IntPtr classPtr))
                 return (Il2CppClass*)classPtr;
+            if (InjectorHelpers.s_InjectedIndices.TryGetValue(index, out classPtr))
+                return (Il2CppClass*)classPtr;
 
             return Original(index);
+        }
+
+        private readonly object _layoutLock = new();
+        private long _typeDefStart;
+        private long _typeDefStride;
+
+        // On v29 an Il2CppType holds a typedef pointer, and callers inline (pointer - start) / stride
+        // before calling this routine. Typedefs 0 and 1 give the start and stride.
+        internal bool TryGetTypeDefLayout(out long start, out long stride)
+        {
+            lock (_layoutLock)
+            {
+                if (_typeDefStride == 0)
+                {
+                    _typeDefStride = -1;
+                    if (UnityVersionHandler.IsMetadataV29OrHigher && Original != null)
+                    {
+                        var first = Original(0);
+                        var second = Original(1);
+                        if (first != null && second != null)
+                        {
+                            long a = UnityVersionHandler.Wrap(first).ByValArg.Data.ToInt64();
+                            long b = UnityVersionHandler.Wrap(second).ByValArg.Data.ToInt64();
+                            if (b > a && b - a < 0x1000)
+                            {
+                                _typeDefStart = a;
+                                _typeDefStride = b - a;
+                            }
+                        }
+                    }
+                }
+
+                start = _typeDefStart;
+                stride = _typeDefStride;
+                return stride > 0;
+            }
         }
 
         private IntPtr FindGetTypeInfoFromTypeDefinitionIndex(bool forceICallMethod = false)

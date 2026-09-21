@@ -73,6 +73,22 @@ internal unsafe class Il2CppDetourMethodPatcher : MethodPatcher
 
     private void Init()
     {
+        // il2cpp shares one native body between the reference type instantiations of a generic method, so a detour
+        // on one of them receives the calls of all the others with the wrong argument types
+        if (Original is MethodInfo { IsGenericMethod: true })
+        {
+            Logger.Instance.LogWarning(
+                "Patching the generic method {Method} also patches the other instantiations that share its il2cpp body, patch a non generic method instead",
+                Original.FullDescription());
+        }
+        else if (Original.DeclaringType != null && Original.DeclaringType.IsGenericType &&
+                 Original.DeclaringType.GetGenericArguments().Any(x => !x.IsValueType))
+        {
+            Logger.Instance.LogWarning(
+                "Patching {Method} on a generic class also patches every reference type instantiation of that class, they share one il2cpp body",
+                Original.FullDescription());
+        }
+
         try
         {
             var methodField = Il2CppInteropUtils.GetIl2CppMethodInfoPointerFieldForGeneratedMethod(Original);
@@ -95,6 +111,7 @@ internal unsafe class Il2CppDetourMethodPatcher : MethodPatcher
             // Get the native MethodInfo struct for the target method
             originalNativeMethodInfo =
                 UnityVersionHandler.Wrap((Il2CppMethodInfo*)(IntPtr)methodField.GetValue(null));
+            SharedBodyCheck.Report(Original, originalNativeMethodInfo.MethodPointer);
 
             // Create a modified native MethodInfo struct, that will point towards the trampoline
             modifiedNativeMethodInfo = UnityVersionHandler.NewMethod();
@@ -128,6 +145,8 @@ internal unsafe class Il2CppDetourMethodPatcher : MethodPatcher
         // Generate a new DMD of the modified unhollowed method, and apply harmony patches to it
         var copiedDmd = CopyOriginal();
 
+        PatchSignatureCheck.Report(Original, copiedDmd.OriginalMethod.GetPatchInfo());
+
         HarmonyManipulator.Manipulate(copiedDmd.OriginalMethod, copiedDmd.OriginalMethod.GetPatchInfo(),
             new ILContext(copiedDmd.Definition));
 
@@ -160,13 +179,13 @@ internal unsafe class Il2CppDetourMethodPatcher : MethodPatcher
         var cursor = new ILCursor(new ILContext(dmd.Definition));
 
 
-        // Remove il2cpp_object_get_virtual_method
+        // Remove the virtual lookup. It would resolve back to the detoured method and recurse
         if (cursor.TryGotoNext(x => x.MatchLdarg(0),
                 x => x.MatchCall(typeof(IL2CPP),
                     nameof(IL2CPP.Il2CppObjectBaseToPtr)),
                 x => x.MatchLdsfld(out _),
-                x => x.MatchCall(typeof(IL2CPP),
-                    nameof(IL2CPP.il2cpp_object_get_virtual_method))))
+                x => x.MatchCall(typeof(IL2CPP), nameof(IL2CPP.ResolveVirtualMethod)) ||
+                     x.MatchCall(typeof(IL2CPP), nameof(IL2CPP.il2cpp_object_get_virtual_method))))
         {
             cursor.RemoveRange(4);
         }
@@ -204,6 +223,17 @@ internal unsafe class Il2CppDetourMethodPatcher : MethodPatcher
 
         // Looks like on x32 gcc and clang return buffer is always used
         return true;
+    }
+
+    public static void GuardStack(string method)
+    {
+        if (System.Runtime.CompilerServices.RuntimeHelpers.TryEnsureSufficientExecutionStack())
+        {
+            return;
+        }
+
+        throw new InsufficientExecutionStackException(
+            $"The patch on {method} ran out of stack. It is most likely calling its own target again. Stack:{Environment.NewLine}{new System.Diagnostics.StackTrace(false)}");
     }
 
     private DynamicMethodDefinition GenerateNativeToManagedTrampoline(MethodInfo targetManagedMethodInfo)
@@ -267,6 +297,10 @@ internal unsafe class Il2CppDetourMethodPatcher : MethodPatcher
         var il = dmd.GetILGenerator();
         il.BeginExceptionBlock();
 
+        // A patch that ends up calling its own target again recurses until the stack dies, which kills the process silently
+        il.Emit(OpCodes.Ldstr, $"{Original.DeclaringType?.FullName}.{Original.Name}");
+        il.Emit(OpCodes.Call, typeof(Il2CppDetourMethodPatcher).GetMethod(nameof(GuardStack))!);
+
         // Declare a list of variables to dereference back to the original pointers.
         // This is required due to the needed interop type conversions, so we can't directly pass some addresses as byref types
         var indirectVariables = new LocalBuilder[managedParams.Length];
@@ -300,6 +334,14 @@ internal unsafe class Il2CppDetourMethodPatcher : MethodPatcher
                 continue;
             }
 
+            if (TrampolineHelpers.IsBoxedStructByRef(managedParams[i]))
+            {
+                il.Emit(OpCodes.Ldloc, indirectVariables[i]);
+                il.Emit(OpCodes.Ldarg_S, i + paramStartIndex);
+                il.Emit(OpCodes.Call, TrampolineHelpers.CopyBoxedStructToMethod);
+                continue;
+            }
+
             il.Emit(OpCodes.Ldarg_S, i + paramStartIndex);
             il.Emit(OpCodes.Ldloc, indirectVariables[i]);
             var directType = managedParams[i].GetElementType();
@@ -317,6 +359,19 @@ internal unsafe class Il2CppDetourMethodPatcher : MethodPatcher
         {
             if (hasReturnBuffer)
             {
+                // A prefix that skips the original without setting __result, or an exception, leaves the wrapper null.
+                // The struct's default is all zeroes.
+                var copyLabel = il.DefineLabel();
+                var doneLabel = il.DefineLabel();
+                il.Emit(OpCodes.Ldloc, managedReturnVariable);
+                il.Emit(OpCodes.Brtrue_S, copyLabel);
+                il.Emit(OpCodes.Ldarg_0);
+                il.Emit(OpCodes.Ldc_I4_0);
+                il.Emit(OpCodes.Ldc_I4, returnSize);
+                il.Emit(OpCodes.Initblk);
+                il.Emit(OpCodes.Br_S, doneLabel);
+
+                il.MarkLabel(copyLabel);
                 il.Emit(OpCodes.Ldarg_0);
                 il.Emit(OpCodes.Ldloc, managedReturnVariable);
                 il.Emit(OpCodes.Call, ObjectBaseToPtrNotNullMethodInfo);
@@ -325,15 +380,28 @@ internal unsafe class Il2CppDetourMethodPatcher : MethodPatcher
                 il.Emit(OpCodes.Cpblk);
 
                 // Return the same pointer to the return buffer
+                il.MarkLabel(doneLabel);
                 il.Emit(OpCodes.Ldarg_0);
             }
             else if (TrampolineHelpers.IsPassedByValue(managedReturnType))
             {
                 // A small struct goes back in a register, so the boxed payload is copied out as the fixed size struct
+                var copyLabel = il.DefineLabel();
+                var doneLabel = il.DefineLabel();
+                var zero = il.DeclareLocal(unmanagedReturnType);
+                il.Emit(OpCodes.Ldloc, managedReturnVariable);
+                il.Emit(OpCodes.Brtrue_S, copyLabel);
+                il.Emit(OpCodes.Ldloca, zero);
+                il.Emit(OpCodes.Initobj, unmanagedReturnType);
+                il.Emit(OpCodes.Ldloc, zero);
+                il.Emit(OpCodes.Br_S, doneLabel);
+
+                il.MarkLabel(copyLabel);
                 il.Emit(OpCodes.Ldloc, managedReturnVariable);
                 il.Emit(OpCodes.Call, ObjectBaseToPtrNotNullMethodInfo);
                 EmitUnbox(il);
                 il.Emit(OpCodes.Ldobj, unmanagedReturnType);
+                il.MarkLabel(doneLabel);
             }
             else
             {
@@ -466,15 +534,25 @@ internal unsafe class Il2CppDetourMethodPatcher : MethodPatcher
         if (managedParamType.IsByRef)
         {
             var directType = managedParamType.GetElementType();
-            // blittable value type pointer, note that ref to boxed Il2CppSystem.ValueType wrapper is still not handled
+            // blittable value type pointer
             if (directType.IsValueType)
                 return;
 
-            // TODO: directType being Il2CppSystem.ValueType is not handled yet (but it's not that common in games). Implement when needed.
-
             variable = il.DeclareLocal(directType);
 
-            il.Emit(OpCodes.Ldind_I);
+            if (TrampolineHelpers.IsBoxedStructByRef(managedParamType))
+            {
+                var data = il.DeclareLocal(typeof(IntPtr));
+                il.Emit(OpCodes.Stloc, data);
+                il.Emit(OpCodes.Ldc_I8, Il2CppClassPointerStore.GetNativeClassPointer(directType).ToInt64());
+                il.Emit(OpCodes.Conv_I);
+                il.Emit(OpCodes.Ldloc, data);
+                il.Emit(OpCodes.Call, TrampolineHelpers.BoxStructAtMethod);
+            }
+            else
+            {
+                il.Emit(OpCodes.Ldind_I);
+            }
 
             HandleTypeConversion(directType);
 

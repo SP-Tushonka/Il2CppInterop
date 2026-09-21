@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.Linq;
 using System.Runtime.CompilerServices;
 using Il2CppInterop.Common.Attributes;
@@ -34,12 +34,47 @@ public static class Il2CppClassPointerStore<T>
     public static IntPtr NativeClassPtr;
     public static Type CreatedTypeRedirect;
 
+    // The generic's class constructor asks il2cpp for a class per type argument and a managed type has none.
+    // What reaches the mod is that constructor failing, so name the argument that cannot be there.
+    private static Exception DescribeMissingArgument(Type type, Exception exception)
+    {
+        if (!type.IsGenericType) return exception;
+
+        foreach (var argument in type.GetGenericArguments())
+        {
+            IntPtr pointer;
+            try
+            {
+                pointer = Il2CppClassPointerStore.GetNativeClassPointer(argument);
+            }
+            catch (Exception)
+            {
+                continue;
+            }
+
+            if (pointer != IntPtr.Zero) continue;
+
+            return new TypeLoadException(
+                $"{type} cannot exist in il2cpp because {argument} has no il2cpp class. A generic only takes types the interop assemblies generated or a type registered with ClassInjector.",
+                exception);
+        }
+
+        return exception;
+    }
+
     static Il2CppClassPointerStore()
     {
         var targetType = typeof(T);
         if (!targetType.IsEnum)
         {
-            RuntimeHelpers.RunClassConstructor(targetType.TypeHandle);
+            try
+            {
+                RuntimeHelpers.RunClassConstructor(targetType.TypeHandle);
+            }
+            catch (Exception exception)
+            {
+                throw DescribeMissingArgument(targetType, exception);
+            }
         }
         else
         {

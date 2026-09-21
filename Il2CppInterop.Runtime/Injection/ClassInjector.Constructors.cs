@@ -1,12 +1,21 @@
-using System;
+﻿using System;
 using System.Collections.Generic;
 using System.Runtime.InteropServices;
 using Il2CppInterop.Runtime.InteropTypes;
+using Il2CppInterop.Runtime.InteropTypes.Arrays;
 
 namespace Il2CppInterop.Runtime.Injection;
 
 public static unsafe partial class ClassInjector
 {
+    [ThreadStatic] private static Il2CppObjectBase? s_constructing;
+
+    // True while the il2cpp base constructor of this object is running. What that constructor calls reaches the
+    // injected overrides before the managed constructor has assigned the fields that follow InvokeBaseConstructor.
+    public static bool IsConstructing(Il2CppObjectBase instance) => ReferenceEquals(s_constructing, instance);
+
+    internal static Type? ConstructingType => s_constructing?.GetType();
+
     // Runs a base class il2cpp constructor on the object DerivedConstructorPointer allocated. Call it after
     // DerivedConstructorBody, the base constructor may call virtual methods the injected class overrides.
     public static void InvokeBaseConstructor(Il2CppObjectBase instance, params object?[] arguments)
@@ -30,12 +39,17 @@ public static unsafe partial class ClassInjector
         if (klass == IntPtr.Zero)
             throw new ArgumentException("The base class has no il2cpp class pointer");
 
+        for (var i = 0; i < arguments.Length; i++)
+            arguments[i] = WrapManagedArray(arguments[i]);
+
         var constructor = FindConstructor(klass, arguments);
         if (constructor == IntPtr.Zero)
-            throw new MissingMethodException($"{IL2CPP.il2cpp_class_get_name_(klass)} has no constructor taking ({string.Join(", ", Array.ConvertAll(arguments, argument => argument?.GetType().Name ?? "null"))})");
+            throw new MissingMethodException($"{IL2CPP.il2cpp_class_get_name_(klass)} has no constructor taking ({string.Join(", ", Array.ConvertAll(arguments, DescribeArgument))})");
 
         var pinned = new List<GCHandle>();
         var nativeArguments = stackalloc IntPtr[Math.Max(arguments.Length, 1)];
+        var outer = s_constructing;
+        s_constructing = instance;
         try
         {
             for (var i = 0; i < arguments.Length; i++)
@@ -47,9 +61,41 @@ public static unsafe partial class ClassInjector
         }
         finally
         {
+            s_constructing = outer;
             foreach (var handle in pinned)
                 handle.Free();
         }
+    }
+
+    // A managed array has no il2cpp class, so it matches no constructor. The il2cpp wrapper is what the caller
+    // meant by it, and building it here saves every mod writing the conversion.
+    private static object? WrapManagedArray(object? argument)
+    {
+        if (argument is not Array array) return argument;
+
+        var element = argument.GetType().GetElementType()!;
+        if (element == typeof(string)) return new Il2CppStringArray((string[])array);
+
+        Type wrapper;
+        if (element.IsPrimitive || element.IsEnum)
+            wrapper = typeof(Il2CppStructArray<>);
+        else if (typeof(Il2CppObjectBase).IsAssignableFrom(element))
+            wrapper = typeof(Il2CppReferenceArray<>);
+        else
+            return argument;
+
+        return Activator.CreateInstance(wrapper.MakeGenericType(element), new object[] { array });
+    }
+
+    private static string DescribeArgument(object? argument)
+    {
+        if (argument == null) return "null";
+
+        var type = argument.GetType();
+        if (typeof(Il2CppObjectBase).IsAssignableFrom(type) || type == typeof(string)) return type.Name;
+
+        var suggestion = SuggestIl2CppType(type);
+        return suggestion != null ? $"{type.Name} (il2cpp wants {suggestion})" : type.Name;
     }
 
     private static IntPtr FindConstructor(IntPtr klass, object?[] arguments)
@@ -100,7 +146,16 @@ public static unsafe partial class ClassInjector
             default:
                 if (!argument.GetType().IsValueType)
                     throw new ArgumentException($"{argument.GetType()} cannot be passed to an il2cpp constructor");
-                var handle = GCHandle.Alloc(argument, GCHandleType.Pinned);
+
+                // bool and char cannot be pinned, il2cpp reads them as a one and a two byte value
+                object value = argument switch
+                {
+                    bool flag => (byte)(flag ? 1 : 0),
+                    char character => (ushort)character,
+                    _ => argument
+                };
+
+                var handle = GCHandle.Alloc(value, GCHandleType.Pinned);
                 pinned.Add(handle);
                 return handle.AddrOfPinnedObject();
         }

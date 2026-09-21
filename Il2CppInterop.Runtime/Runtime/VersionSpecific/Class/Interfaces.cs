@@ -32,10 +32,12 @@ public interface INativeClassStruct : INativeStruct
     bool InitializedAndNoError { get; set; }
     bool SizeInited { get; set; }
     bool HasFinalize { get; set; }
+    bool HasReferences { get; set; }
     bool IsVtableInitialized { get; set; }
 
     ref IntPtr Name { get; }
     ref IntPtr Namespace { get; }
+    unsafe ref IntPtr GcDesc { get; }
 
     INativeTypeStruct ByValArg { get; }
     INativeTypeStruct ThisArg { get; }

@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.Collections.Concurrent;
 using System.Linq;
 using System.Reflection;
@@ -9,6 +9,7 @@ using System.Text;
 using Il2CppInterop.Common;
 using Il2CppInterop.Runtime.Injection;
 using Il2CppInterop.Runtime.InteropTypes;
+using Il2CppInterop.Runtime.InteropTypes.Arrays;
 using Il2CppInterop.Runtime.Runtime;
 using Microsoft.Extensions.Logging;
 using Object = Il2CppSystem.Object;
@@ -170,6 +171,11 @@ public static class DelegateSupport
                 bodyBuilder.Emit(OpCodes.Ldarg, i + 1);
                 bodyBuilder.Emit(OpCodes.Call, typeof(IL2CPP).GetMethod(IL2CPP.IsIl2CppNullable(parameterType) ? nameof(IL2CPP.BoxNullable) : nameof(IL2CPP.il2cpp_value_box))!);
                 bodyBuilder.Emit(OpCodes.Newobj, parameterType.GetConstructor(new[] { typeof(IntPtr) })!);
+            }
+            else if (typeof(Il2CppObjectBase).IsAssignableFrom(parameterType) && !typeof(Il2CppArrayBase).IsAssignableFrom(parameterType))
+            {
+                // The pool hands back the managed object of an injected class, a fresh wrapper would lose the subclass
+                bodyBuilder.Emit(OpCodes.Call, typeof(Il2CppObjectPool).GetMethod(nameof(Il2CppObjectPool.Get))!.MakeGenericMethod(parameterType));
             }
             else if (!parameterType.IsValueType)
             {

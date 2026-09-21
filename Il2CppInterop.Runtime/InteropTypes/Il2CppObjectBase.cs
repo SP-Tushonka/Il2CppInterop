@@ -1,9 +1,10 @@
-using System;
+﻿using System;
 using System.Reflection;
 using System.Reflection.Emit;
 using System.Runtime.CompilerServices;
 using System.Runtime.InteropServices;
 using System.Runtime.Serialization;
+using Il2CppInterop.Runtime.InteropTypes.Arrays;
 using Il2CppInterop.Runtime.Runtime;
 
 namespace Il2CppInterop.Runtime.InteropTypes;
@@ -70,8 +71,29 @@ public partial class Il2CppObjectBase : IIl2CppObjectBase
 
     public T Cast<T>() where T : class
     {
-        return TryCast<T>() ?? throw new InvalidCastException(
-            $"Can't cast object of type {IL2CPP.il2cpp_class_get_name_(IL2CPP.il2cpp_object_get_class(Pointer))} to type {typeof(T)}");
+        return TryCast<T>() ?? throw new InvalidCastException(DescribeCastFailure(typeof(T)));
+    }
+
+    // An il2cpp List and an il2cpp array are separate classes, so a cast between them can only fail. A method that
+    // returned an array in an older build and returns a List now reaches the mod as this cast, nothing else.
+    private string DescribeCastFailure(Type target)
+    {
+        var name = IL2CPP.il2cpp_class_get_name_(IL2CPP.il2cpp_object_get_class(Pointer));
+        var message = $"Can't cast object of type {name} to type {target}";
+
+        if (name.StartsWith("List`1", StringComparison.Ordinal) && IsIl2CppArray(target))
+            return message + ". An il2cpp List is not an array, call ToArray() on it first";
+
+        return message;
+    }
+
+    private static bool IsIl2CppArray(Type target)
+    {
+        for (var type = target; type != null; type = type.BaseType)
+            if (type.IsGenericType && type.GetGenericTypeDefinition() == typeof(Il2CppArrayBase<>))
+                return true;
+
+        return false;
     }
 
     internal static unsafe T UnboxUnsafe<T>(IntPtr pointer)

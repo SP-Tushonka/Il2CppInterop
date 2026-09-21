@@ -101,6 +101,7 @@ internal class Il2CppClassGenerator : VersionSpecificGenerator
         new ByRefWrapper("Il2CppClassAttributes", "Flags", new[] { "flags" }),
         new ByRefWrapper("IntPtr", "Name", new[] { "name" }),
         new ByRefWrapper("IntPtr", "Namespace", new[] { "namespaze" }),
+        new ByRefWrapper("IntPtr", "GcDesc", new[] { "gc_desc" }),
         new ByRefWrapper("Il2CppImage*", "Image", new[] { "image" }),
         new ByRefWrapper("Il2CppClass*", "Parent", new[] { "parent" }),
         new ByRefWrapper("Il2CppClass*", "ElementClass", new[] { "element_class" }),

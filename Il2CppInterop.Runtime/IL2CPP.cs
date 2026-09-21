@@ -223,6 +223,22 @@ public static unsafe class IL2CPP
         return obj?.Pointer ?? throw new NullReferenceException();
     }
 
+    // A null wrapper passed for a struct parameter stands for the struct's default. il2cpp_object_new hands back a zeroed box.
+    public static IntPtr Il2CppValueTypeToPtr(Il2CppObjectBase obj, IntPtr klass)
+    {
+        if (obj != null)
+        {
+            return obj.Pointer;
+        }
+
+        if (klass == IntPtr.Zero)
+        {
+            throw new NullReferenceException();
+        }
+
+        return il2cpp_object_new(klass);
+    }
+
     // The CLR has already picked the override, so a wrapper runs on an injected object only for a base call or a method it
     // does not override. il2cpp dispatch would send a base call straight back to the override.
     public static IntPtr ResolveVirtualMethod(IntPtr obj, IntPtr method)

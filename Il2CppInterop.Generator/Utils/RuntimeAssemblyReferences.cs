@@ -34,6 +34,7 @@ public class RuntimeAssemblyReferences
     public Memoize<TypeSignature, IMethodDefOrRef> Il2CppArrayBase_set_Item { get; private set; }
     public Lazy<IMethodDefOrRef> IL2CPP_Il2CppObjectBaseToPtr { get; private set; }
     public Lazy<IMethodDefOrRef> IL2CPP_Il2CppObjectBaseToPtrNotNull { get; private set; }
+    public Lazy<IMethodDefOrRef> IL2CPP_Il2CppValueTypeToPtr { get; private set; }
     public Lazy<IMethodDefOrRef> IL2CPP_Il2CppStringToManaged { get; private set; }
     public Lazy<IMethodDefOrRef> IL2CPP_ManagedStringToIl2Cpp { get; private set; }
     public Lazy<IMethodDefOrRef> Il2CppObjectBase_Cast { get; private set; }
@@ -254,6 +255,14 @@ public class RuntimeAssemblyReferences
             var mr = ReferenceCreator.CreateStaticMethodReference("Il2CppObjectBaseToPtrNotNull", ResolveType("System.IntPtr"),
                 ResolveType("Il2CppInterop.Runtime.IL2CPP").ToTypeDefOrRef(),
                 ResolveType("Il2CppInterop.Runtime.InteropTypes.Il2CppObjectBase"));
+            return mr;
+        });
+
+        IL2CPP_Il2CppValueTypeToPtr = new Lazy<IMethodDefOrRef>(() =>
+        {
+            var mr = ReferenceCreator.CreateStaticMethodReference("Il2CppValueTypeToPtr", ResolveType("System.IntPtr"),
+                ResolveType("Il2CppInterop.Runtime.IL2CPP").ToTypeDefOrRef(),
+                ResolveType("Il2CppInterop.Runtime.InteropTypes.Il2CppObjectBase"), ResolveType("System.IntPtr"));
             return mr;
         });
 

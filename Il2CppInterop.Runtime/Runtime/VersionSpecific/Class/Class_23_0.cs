@@ -133,6 +133,7 @@ namespace Il2CppInterop.Runtime.Runtime.VersionSpecific.Class
             public ref Il2CppClassAttributes Flags => ref *(Il2CppClassAttributes*)&_->flags;
             public ref IntPtr Name => ref *(IntPtr*)&_->name;
             public ref IntPtr Namespace => ref *(IntPtr*)&_->namespaze;
+            public ref IntPtr GcDesc => ref *(IntPtr*)&_->gc_desc;
             public ref Il2CppImage* Image => ref _->image;
             public ref Il2CppClass* Parent => ref _->parent;
             public ref Il2CppClass* ElementClass => ref _->element_class;

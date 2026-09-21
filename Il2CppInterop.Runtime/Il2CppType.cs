@@ -1,3 +1,4 @@
+using Il2CppInterop.Runtime.Runtime;
 using Il2CppSystem;
 using ArgumentException = System.ArgumentException;
 using IntPtr = System.IntPtr;
@@ -40,6 +41,19 @@ public static class Il2CppType
     {
         var pointer = Il2CppClassPointerStore.GetNativeClassPointer(type);
         return TypeFromPointerInternal(pointer, type.Name, throwOnFailure);
+    }
+
+    /// <summary>
+    /// The generated wrapper of an il2cpp type, the reverse of <see cref="From(System.Type)"/>. Null for generic
+    /// instantiations, arrays and types no loaded interop assembly declares.
+    /// </summary>
+    public static System.Type? ToManaged(Type? type)
+    {
+        if (type == null)
+            return null;
+
+        var klass = IL2CPP.il2cpp_class_from_system_type(IL2CPP.Il2CppObjectBaseToPtrNotNull(type));
+        return klass == IntPtr.Zero ? null : Il2CppWrapperTypes.ResolveAny(klass);
     }
 
     public static Type Of<T>()

@@ -12,11 +12,19 @@ namespace Il2CppInterop.Runtime.Runtime;
 internal static class Il2CppWrapperTypes
 {
     private static readonly ConcurrentDictionary<IntPtr, Type?> ourTypes = new();
+    private static readonly ConcurrentDictionary<IntPtr, Type?> ourAnyTypes = new();
     private static readonly ConcurrentDictionary<Type, Func<IntPtr, Il2CppObjectBase>> ourInitializers = new();
 
+    // Object backed wrappers only, the pool creates instances of these
     public static Type? Resolve(IntPtr klass)
     {
-        return ourTypes.GetOrAdd(klass, static k => ResolveUncached(k));
+        return ourTypes.GetOrAdd(klass, static k => FindWrapper(k, true));
+    }
+
+    // Any wrapper, blittable structs and enums included, for mapping a type rather than creating an object
+    public static Type? ResolveAny(IntPtr klass)
+    {
+        return ourAnyTypes.GetOrAdd(klass, static k => FindWrapper(k, false));
     }
 
     public static Il2CppObjectBase Create(Type type, IntPtr pointer)
@@ -24,7 +32,7 @@ internal static class Il2CppWrapperTypes
         return ourInitializers.GetOrAdd(type, static t => MakeInitializer(t))(pointer);
     }
 
-    private static Type? ResolveUncached(IntPtr klass)
+    private static Type? FindWrapper(IntPtr klass, bool objectBackedOnly)
     {
         try
         {
@@ -53,7 +61,7 @@ internal static class Il2CppWrapperTypes
             // System.String is generated as a wrapper class whose methods treat this as a managed string, an instance
             // of it is unusable, so il2cpp strings keep the static type
             if (ns == "System" && nested == "String")
-                return null;
+                return objectBackedOnly ? null : typeof(string);
 
             // The prefixed assembly goes first, .NET itself answers to mscorlib and System and forwards to the real BCL types
             foreach (var assemblyName in new[] { "Il2Cpp" + imageName, imageName })
@@ -64,7 +72,9 @@ internal static class Il2CppWrapperTypes
                 foreach (var typeName in typeNames)
                 {
                     var type = assembly.GetType(typeName);
-                    if (type != null && !type.IsValueType && !type.IsGenericTypeDefinition && typeof(Il2CppObjectBase).IsAssignableFrom(type))
+                    if (type == null || type.IsGenericTypeDefinition)
+                        continue;
+                    if (!objectBackedOnly || (!type.IsValueType && typeof(Il2CppObjectBase).IsAssignableFrom(type)))
                         return type;
                 }
             }

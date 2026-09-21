@@ -85,6 +85,12 @@ namespace Il2CppInterop.Runtime.Injection
         internal static long CreateClassToken(IntPtr classPointer)
         {
             long newToken = Interlocked.Decrement(ref s_LastInjectedToken);
+            // Tokens one stride apart decode to distinct indices on the inlined typedef pointer path.
+            if (GetTypeInfoFromTypeDefinitionIndexHook.TryGetTypeDefLayout(out long start, out long stride))
+            {
+                newToken *= stride;
+                s_InjectedIndices[(int)((newToken - start) / stride)] = classPointer;
+            }
             s_InjectedClasses[newToken] = classPointer;
             return newToken;
         }
@@ -138,6 +144,7 @@ namespace Il2CppInterop.Runtime.Injection
 
         private static long s_LastInjectedToken = -2;
         internal static readonly ConcurrentDictionary<long, IntPtr> s_InjectedClasses = new();
+        internal static readonly ConcurrentDictionary<int, IntPtr> s_InjectedIndices = new();
         /// <summary> (namespace, class, image) : class </summary>
         internal static readonly Dictionary<(string _namespace, string _class, IntPtr imagePtr), IntPtr> s_ClassNameLookup = new();
 

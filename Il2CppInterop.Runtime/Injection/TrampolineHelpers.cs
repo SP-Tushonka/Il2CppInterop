@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.Collections.Generic;
 using System.Reflection;
 using System.Reflection.Emit;
@@ -58,6 +58,35 @@ internal static class TrampolineHelpers
     {
         return returnType.IsSubclassOf(typeof(Il2CppSystem.ValueType)) && !IsPassedByValue(returnType);
     }
+
+    // A byref to a boxed struct wrapper points at the struct's bytes, not at an object. The wrapper needs a box of
+    // its own, so the bytes are copied into one on the way in and back out after the call.
+    internal static bool IsBoxedStructByRef(Type managedType)
+    {
+        return managedType.IsByRef && managedType.GetElementType()!.IsSubclassOf(typeof(Il2CppSystem.ValueType));
+    }
+
+    internal static unsafe IntPtr BoxStructAt(IntPtr klass, IntPtr data)
+    {
+        var box = IL2CPP.il2cpp_object_new(klass);
+        uint align = 0;
+        var size = IL2CPP.il2cpp_class_value_size(klass, ref align);
+        Buffer.MemoryCopy(data.ToPointer(), IL2CPP.il2cpp_object_unbox(box).ToPointer(), size, size);
+        return box;
+    }
+
+    internal static unsafe void CopyBoxedStructTo(Il2CppObjectBase box, IntPtr data)
+    {
+        if (box == null) return;
+
+        var pointer = box.Pointer;
+        uint align = 0;
+        var size = IL2CPP.il2cpp_class_value_size(IL2CPP.il2cpp_object_get_class(pointer), ref align);
+        Buffer.MemoryCopy(IL2CPP.il2cpp_object_unbox(pointer).ToPointer(), data.ToPointer(), size, size);
+    }
+
+    internal static readonly MethodInfo BoxStructAtMethod = typeof(TrampolineHelpers).GetMethod(nameof(BoxStructAt), BindingFlags.Static | BindingFlags.NonPublic)!;
+    internal static readonly MethodInfo CopyBoxedStructToMethod = typeof(TrampolineHelpers).GetMethod(nameof(CopyBoxedStructTo), BindingFlags.Static | BindingFlags.NonPublic)!;
 
     internal static Type NativeType(this Type managedType)
     {

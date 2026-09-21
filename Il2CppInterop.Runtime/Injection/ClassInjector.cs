@@ -265,6 +265,11 @@ public static unsafe partial class ClassInjector
         classPointer.ThisArg.Type = classPointer.ByValArg.Type = Il2CppTypeEnum.IL2CPP_TYPE_CLASS;
         classPointer.ThisArg.ByRef = true;
 
+        // The collector reads the descriptor from the object's own class. Without it an injected object is
+        // allocated unscanned, so the il2cpp references its base class holds are freed while still in use.
+        classPointer.GcDesc = baseClassPointer.GcDesc;
+        classPointer.HasReferences = baseClassPointer.HasReferences;
+
         classPointer.Flags = baseClassPointer.Flags; // todo: adjust flags?
 
         // An injected abstract class leaves its abstract methods as null vtable slots, a derived injection only fills those
@@ -483,7 +488,7 @@ public static unsafe partial class ClassInjector
                 ?? (parameters != null
                     ? type.GetMethod(methodName, BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.DeclaredOnly, parameters)
                     : null)
-                ?? FindOverrideByName(type, methodName, baseMethod);
+                ?? FindOverrideByName(type, methodName, baseMethod, boundMethods);
 
             if (monoMethodImplementation != null && monoMethodImplementation.IsAbstract)
             {
@@ -633,7 +638,7 @@ public static unsafe partial class ClassInjector
 
     // Il2cpp parameter types that System.Type cannot express, a generic parameter or a wrapped value type such as Nullable<T>,
     // leave the signature lookup no way to match. The override is found by name and arity, compared by il2cpp class when ambiguous.
-    private static MethodInfo? FindOverrideByName(Type type, string methodName, INativeMethodInfoStruct baseMethod)
+    private static MethodInfo? FindOverrideByName(Type type, string methodName, INativeMethodInfoStruct baseMethod, HashSet<MethodInfo> boundMethods)
     {
         var candidates = type
             .GetMethods(BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.DeclaredOnly)
@@ -655,13 +660,16 @@ public static unsafe partial class ClassInjector
             }
         }
 
+        // Several slots can share a name and a parameter count, so a method only goes into more than one of them
+        // when every parameter was compared. Otherwise it takes the first and the rest keep the base implementation.
+        var confirmed = Array.TrueForAll(baseClasses, it => it != IntPtr.Zero);
         var matches = candidates.Where(it => ParametersMatch(it, baseClasses)).ToArray();
         if (matches.Length == 1)
         {
-            return matches[0];
+            return confirmed || !boundMethods.Contains(matches[0]) ? matches[0] : null;
         }
 
-        if (matches.Length > 1 || candidates.Length != 1)
+        if (matches.Length > 1 || candidates.Length != 1 || boundMethods.Contains(candidates[0]))
         {
             return null;
         }
@@ -764,10 +772,13 @@ public static unsafe partial class ClassInjector
             }
             catch (Exception)
             {
-                return false;
+                continue;
             }
 
-            if (candidateClass == IntPtr.Zero || candidateClass != baseClasses[i])
+            // A type neither side can name cannot rule the candidate out, the parameters that do have a class decide
+            if (candidateClass == IntPtr.Zero || baseClasses[i] == IntPtr.Zero) continue;
+
+            if (candidateClass != baseClasses[i])
             {
                 return false;
             }
@@ -957,8 +968,7 @@ public static unsafe partial class ClassInjector
 
         if (!IsTypeSupported(method.ReturnType))
         {
-            Logger.Instance.LogWarning(
-                "Method {Method} on type {DeclaringType} has unsupported return type {ReturnType}", method.ToString(), method.DeclaringType, method.ReturnType);
+            ReportIneligible(method, $"return type {method.ReturnType}", method.ReturnType);
             return false;
         }
 
@@ -967,13 +977,96 @@ public static unsafe partial class ClassInjector
             var parameterType = parameter.ParameterType;
             if (!IsTypeSupported(parameterType))
             {
-                Logger.Instance.LogWarning(
-                    "Method {Method} on type {DeclaringType} has unsupported parameter {Parameter} of type {ParameterType}", method.ToString(), method.DeclaringType, parameter, parameterType);
+                ReportIneligible(method, $"parameter {parameter} of type {parameterType}", parameterType);
                 return false;
             }
         }
 
         return true;
+    }
+
+    // A method il2cpp has no types for stays invisible to it, which costs nothing while only managed code calls it.
+    // The case worth a warning is the one the game was meant to call, where it goes on calling the base instead.
+    private static void ReportIneligible(MethodInfo method, string reason, Type unsupported)
+    {
+        var suggestion = SuggestIl2CppType(unsupported);
+        var hint = suggestion != null ? $", declare it as {suggestion}" : "";
+
+        if (IsCalledByIl2Cpp(method))
+        {
+            Logger.Instance.LogWarning(
+                "Method {Method} on type {DeclaringType} overrides an il2cpp method but has an unsupported {Reason}, so the game keeps calling the base one{Hint}",
+                method.ToString(), method.DeclaringType, reason, hint);
+            return;
+        }
+
+        Logger.Instance.LogDebug(
+            "Method {Method} on type {DeclaringType} has an unsupported {Reason}, only managed code can call it{Hint}",
+            method.ToString(), method.DeclaringType, reason, hint);
+    }
+
+    private static bool IsCalledByIl2Cpp(MethodInfo method)
+    {
+        if (method.DeclaringType == null) return false;
+
+        var declaring = method.GetBaseDefinition().DeclaringType;
+        if (declaring != null && declaring != method.DeclaringType && IsRealIl2CppType(declaring)) return true;
+
+        foreach (var @interface in method.DeclaringType.GetInterfaces())
+            if (IsRealIl2CppType(@interface) && @interface.GetMethod(method.Name) != null)
+                return true;
+
+        return false;
+    }
+
+    // Both sides of an injected base are managed, so a call between them never goes through il2cpp and the
+    // signature it cannot represent costs nothing
+    private static bool IsRealIl2CppType(Type type)
+    {
+        var pointer = SafeClassPointer(type);
+        return pointer != IntPtr.Zero && !RuntimeSpecificsStore.IsInjected(pointer);
+    }
+
+    private static IntPtr SafeClassPointer(Type type)
+    {
+        try
+        {
+            return Il2CppClassPointerStore.GetNativeClassPointer(type);
+        }
+        catch (Exception)
+        {
+            return IntPtr.Zero;
+        }
+    }
+
+    // The type the method has to use instead, when the interop assemblies carry one
+    private static string? SuggestIl2CppType(Type type)
+    {
+        try
+        {
+            if (type.IsArray)
+            {
+                var element = type.GetElementType()!;
+                if (element == typeof(string)) return "Il2CppStringArray";
+                return element.IsPrimitive || element.IsEnum
+                    ? $"Il2CppStructArray<{element.Name}>"
+                    : $"Il2CppReferenceArray<{element.Name}>";
+            }
+
+            var definition = type.IsGenericType ? type.GetGenericTypeDefinition() : type;
+            var arity = definition.IsGenericType ? definition.GetGenericArguments().Length : 0;
+            var name = "Il2Cpp" + definition.FullName!.Split('`')[0];
+            var qualified = arity > 0 ? $"{name}`{arity}" : name;
+            if (!AppDomain.CurrentDomain.GetAssemblies().Any(assembly => assembly.GetType(qualified) != null)) return null;
+
+            return arity > 0
+                ? $"{name}<{string.Join(", ", type.GetGenericArguments().Select(argument => argument.Name))}>"
+                : name;
+        }
+        catch (Exception)
+        {
+            return null;
+        }
     }
 
     private static Il2CppMethodInfo* ConvertStaticMethod(VoidCtorDelegate voidCtor, string methodName,
@@ -1206,8 +1299,22 @@ public static unsafe partial class ClassInjector
 
     public static void Finalize(IntPtr ptr)
     {
+        // The il2cpp GC can reach an injected object that never got a managed handle, and an exception raised on
+        // the finalizer thread has nobody to catch it and takes the process down
         var gcHandle = ClassInjectorBase.GetGcHandlePtrFromIl2CppObject(ptr);
-        GCHandle.FromIntPtr(gcHandle).Free();
+        if (gcHandle == IntPtr.Zero)
+        {
+            return;
+        }
+
+        try
+        {
+            GCHandle.FromIntPtr(gcHandle).Free();
+        }
+        catch (Exception exception)
+        {
+            Logger.Instance.LogWarning("Finalizing an injected object failed: {Message}", exception.Message);
+        }
     }
 
     private static Delegate GetOrCreateInvoker(MethodInfo monoMethod)
@@ -1430,6 +1537,11 @@ public static unsafe partial class ClassInjector
                 {
                     body.Emit(OpCodes.Call, typeof(Il2CppObjectPool).GetMethod(nameof(Il2CppObjectPool.Get))!.MakeGenericMethod(type));
                 }
+                else if (type.IsSubclassOf(typeof(Il2CppObjectBase)) && !type.IsSubclassOf(typeof(Il2CppArrayBase)))
+                {
+                    // The pool hands back the managed object of an injected class, a fresh wrapper would lose the subclass
+                    body.Emit(OpCodes.Call, typeof(Il2CppObjectPool).GetMethod(nameof(Il2CppObjectPool.Get))!.MakeGenericMethod(type));
+                }
                 else if (type.IsSubclassOf(typeof(Il2CppObjectBase)))
                 {
                     var labelNull = body.DefineLabel();
@@ -1458,7 +1570,29 @@ public static unsafe partial class ClassInjector
 
                 indirectVariables[i] = body.DeclareLocal(elemType);
 
-                body.Emit(OpCodes.Ldind_I);
+                // A pointer sized load only fits a byref to an object or string. A struct behind the byref needs all
+                // of its bytes, and bool is one byte on the il2cpp side.
+                if (elemType == typeof(bool))
+                {
+                    body.Emit(OpCodes.Ldind_U1);
+                }
+                else if (elemType.IsValueType)
+                {
+                    body.Emit(OpCodes.Ldobj, elemType);
+                }
+                else if (TrampolineHelpers.IsBoxedStructByRef(parameter))
+                {
+                    var data = body.DeclareLocal(typeof(IntPtr));
+                    body.Emit(OpCodes.Stloc, data);
+                    body.Emit(OpCodes.Ldc_I8, Il2CppClassPointerStore.GetNativeClassPointer(elemType).ToInt64());
+                    body.Emit(OpCodes.Conv_I);
+                    body.Emit(OpCodes.Ldloc, data);
+                    body.Emit(OpCodes.Call, TrampolineHelpers.BoxStructAtMethod);
+                }
+                else
+                {
+                    body.Emit(OpCodes.Ldind_I);
+                }
                 HandleTypeConversion(elemType);
                 body.Emit(OpCodes.Stloc, indirectVariables[i]);
                 body.Emit(OpCodes.Ldloca, indirectVariables[i]);
@@ -1482,6 +1616,13 @@ public static unsafe partial class ClassInjector
             var variable = indirectVariables[i];
             if (variable == null)
                 continue;
+            if (TrampolineHelpers.IsBoxedStructByRef(managedParameters[i]))
+            {
+                body.Emit(OpCodes.Ldloc, variable);
+                body.Emit(OpCodes.Ldarg_S, i + argumentOffset);
+                body.Emit(OpCodes.Call, TrampolineHelpers.CopyBoxedStructToMethod);
+                continue;
+            }
             body.Emit(OpCodes.Ldarg_S, i + argumentOffset);
             body.Emit(OpCodes.Ldloc, variable);
             var directType = managedParameters[i].GetElementType();
@@ -1495,21 +1636,21 @@ public static unsafe partial class ClassInjector
                     body.Emit(OpCodes.Castclass, typeof(Il2CppObjectBase));
                 body.Emit(OpCodes.Call, typeof(IL2CPP).GetMethod(nameof(IL2CPP.Il2CppObjectBaseToPtr))!);
             }
-            body.Emit(InjectorHelpers.StIndOpcodes.TryGetValue(directType, out var stindOpCodde)
-                ? stindOpCodde
-                : OpCodes.Stind_I);
+            if (InjectorHelpers.StIndOpcodes.TryGetValue(directType, out var stindOpCodde))
+                body.Emit(stindOpCodde);
+            else if (directType.IsValueType)
+                body.Emit(OpCodes.Stobj, directType);
+            else
+                body.Emit(OpCodes.Stind_I);
         }
         // body.Emit(OpCodes.Ret); // breaks coreclr
 
         var exceptionLocal = body.DeclareLocal(typeof(Exception));
         body.BeginCatchBlock(typeof(Exception));
         body.Emit(OpCodes.Stloc, exceptionLocal);
-        body.Emit(OpCodes.Ldstr, "Exception in IL2CPP-to-Managed trampoline, not passing it to il2cpp: ");
         body.Emit(OpCodes.Ldloc, exceptionLocal);
-        body.Emit(OpCodes.Callvirt, typeof(object).GetMethod(nameof(ToString))!);
-        body.Emit(OpCodes.Call,
-            typeof(string).GetMethod(nameof(string.Concat), new[] { typeof(string), typeof(string) })!);
-        body.Emit(OpCodes.Call, typeof(ClassInjector).GetMethod(nameof(LogError), BindingFlags.Static | BindingFlags.NonPublic)!);
+        body.Emit(OpCodes.Ldstr, $"{monoMethod.DeclaringType}.{monoMethod.Name}");
+        body.Emit(OpCodes.Call, typeof(ClassInjector).GetMethod(nameof(ReportTrampolineException), BindingFlags.Static | BindingFlags.NonPublic)!);
 
         body.EndExceptionBlock();
 
@@ -1556,9 +1697,18 @@ public static unsafe partial class ClassInjector
         return @delegate;
     }
 
-    private static void LogError(string message)
+    private static void ReportTrampolineException(Exception exception, string method)
     {
-        Logger.Instance.LogError("{Message}", message);
+        var constructing = ConstructingType;
+        if (constructing == null)
+        {
+            Logger.Instance.LogError("Exception in IL2CPP-to-Managed trampoline, not passing it to il2cpp: {Message}", exception.ToString());
+            return;
+        }
+
+        Logger.Instance.LogError(
+            "Exception in IL2CPP-to-Managed trampoline, not passing it to il2cpp: {Message}{NewLine}{Method} ran from the il2cpp constructor of {Type}, where everything the managed constructor assigns after InvokeBaseConstructor is still null",
+            exception.ToString(), Environment.NewLine, method, constructing);
     }
 
     private static string ExtractSignature(MethodInfo monoMethod)

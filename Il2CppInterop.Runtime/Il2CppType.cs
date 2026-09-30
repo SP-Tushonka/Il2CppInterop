@@ -1,3 +1,4 @@
+using Il2CppInterop.Runtime.Runtime;
 using Il2CppSystem;
 using ArgumentException = System.ArgumentException;
 using IntPtr = System.IntPtr;
@@ -51,5 +52,15 @@ public static class Il2CppType
     {
         var classPointer = Il2CppClassPointerStore<T>.NativeClassPtr;
         return TypeFromPointerInternal(classPointer, typeof(T).Name, throwOnFailure);
+    }
+
+    // The generated wrapper type of an il2cpp type. Null for generic instantiations, arrays and types without a wrapper.
+    public static System.Type? ToManaged(Type type)
+    {
+        if (type is null)
+            return null;
+
+        var classPointer = IL2CPP.il2cpp_class_from_system_type(type.Pointer);
+        return classPointer == IntPtr.Zero ? null : Il2CppWrapperTypes.Resolve(classPointer);
     }
 }

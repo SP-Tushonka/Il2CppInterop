@@ -160,13 +160,14 @@ internal unsafe class Il2CppDetourMethodPatcher : MethodPatcher
         var cursor = new ILCursor(new ILContext(dmd.Definition));
 
 
-        // Remove il2cpp_object_get_virtual_method
+        // Remove il2cpp_object_get_virtual_method, or the ResolveVirtualMethod the generator emits in its place.
+        // Left in, it resolves the vtable slot back to the hooked method and the original call recurses forever.
         if (cursor.TryGotoNext(x => x.MatchLdarg(0),
                 x => x.MatchCall(typeof(IL2CPP),
                     nameof(IL2CPP.Il2CppObjectBaseToPtr)),
                 x => x.MatchLdsfld(out _),
-                x => x.MatchCall(typeof(IL2CPP),
-                    nameof(IL2CPP.il2cpp_object_get_virtual_method))))
+                x => x.MatchCall(typeof(IL2CPP), nameof(IL2CPP.il2cpp_object_get_virtual_method))
+                     || x.MatchCall(typeof(IL2CPP), nameof(IL2CPP.ResolveVirtualMethod))))
         {
             cursor.RemoveRange(4);
         }

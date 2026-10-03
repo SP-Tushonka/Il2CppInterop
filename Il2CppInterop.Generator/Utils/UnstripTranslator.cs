@@ -15,6 +15,11 @@ namespace Il2CppInterop.Generator.Utils;
 
 public static class UnstripTranslator
 {
+    /// <summary>
+    /// What the last failed translation stopped on, an instruction or the stage before the body, for the trace log
+    /// </summary>
+    public static string? LastFailure { get; private set; }
+
     public static bool TranslateMethod(MethodDefinition original, MethodDefinition target,
         TypeRewriteContext typeRewriteContext, RuntimeAssemblyReferences imports)
     {
@@ -22,6 +27,7 @@ public static class UnstripTranslator
             return true;
 
         target.CilMethodBody = new();
+        LastFailure = "local variable types";
 
         var globalContext = typeRewriteContext.AssemblyContext.GlobalContext;
         Dictionary<CilLocalVariable, CilLocalVariable> localVariableMap = new();
@@ -44,10 +50,18 @@ public static class UnstripTranslator
 
         List<KeyValuePair<CilInstructionLabel, CilInstructionLabel>> labelMap = new();
         Dictionary<CilInstruction, CilInstruction> instructionMap = new();
+        HashSet<CilInstruction>? branchTargets = null;
 
         var targetBuilder = target.CilMethodBody.Instructions;
+
+        var classConstructor = original.IsConstructor && !original.IsStatic && target.DeclaringType != null && !target.DeclaringType.IsValueType();
+        LastFailure = "object allocation, neither the class nor its base exists in il2cpp";
+        if (classConstructor && !EmitObjectAllocation(target, globalContext, imports))
+            return false;
+
         foreach (var bodyInstruction in original.CilMethodBody.Instructions)
         {
+            LastFailure = bodyInstruction.ToString();
             if (bodyInstruction.Operand is null)
             {
                 CilInstruction newInstruction;
@@ -60,35 +74,39 @@ public static class UnstripTranslator
                         break;
 
                     case CilCode.Ldelem_Ref:
-                        //This is Il2CppReferenceArray<T>.get_Item but the T is not known because the operand is null.
-                        return false;
-
-                    case CilCode.Stelem_Ref:
-                        //This is Il2CppReferenceArray<T>.set_Item but the T is not known because the operand is null.
-                        return false;
-
                     case CilCode.Ldelem_I1:
+                    case CilCode.Ldelem_U1:
                     case CilCode.Ldelem_I2:
+                    case CilCode.Ldelem_U2:
                     case CilCode.Ldelem_I4:
                     case CilCode.Ldelem_U4:
-                        //This is Il2CppArrayBase<T>.get_Item but the T could be either the cooresponding primitive or an enum.
-                        return false;
-
-                    case CilCode.Ldelem_U1:
-                        //This is Il2CppArrayBase<T>.get_Item but the T could be either byte, bool, or an enum.
-                        return false;
-
-                    case CilCode.Ldelem_U2:
-                        //This is Il2CppArrayBase<T>.get_Item but the T could be either ushort, char, or an enum.
-                        return false;
-
                     case CilCode.Ldelem_I8:
-                        //This is Il2CppArrayBase<T>.get_Item but the T could be either signed, unsigned, or an enum.
-                        return false;
-
                     case CilCode.Ldelem_I:
-                        //This is Il2CppArrayBase<T>.get_Item but the T could be either signed, unsigned, or a pointer.
-                        return false;
+                        {
+                            // The opcode does not name the element type, which may be a primitive, bool, char or an enum,
+                            // so it is read off the array being loaded from
+                            var elementType = FindArrayElementType(original.CilMethodBody, bodyInstruction, 1, ref branchTargets);
+                            var newElementType = elementType == null ? null : Pass80UnstripMethods.ResolveTypeInNewAssemblies(globalContext, elementType, imports);
+                            if (newElementType == null)
+                                return false;
+
+                            var getMethod = imports.Il2CppArrayBase_get_Item.Get(newElementType);
+                            newInstruction = targetBuilder.Add(OpCodes.Callvirt, imports.Module.DefaultImporter.ImportMethod(getMethod));
+                        }
+                        break;
+
+                    case CilCode.Stelem_Ref:
+                    case >= CilCode.Stelem_I and <= CilCode.Stelem_I8:
+                        {
+                            var elementType = FindArrayElementType(original.CilMethodBody, bodyInstruction, 2, ref branchTargets);
+                            var newElementType = elementType == null ? null : Pass80UnstripMethods.ResolveTypeInNewAssemblies(globalContext, elementType, imports);
+                            if (newElementType == null)
+                                return false;
+
+                            var setMethod = imports.Il2CppArrayBase_set_Item.Get(newElementType);
+                            newInstruction = targetBuilder.Add(OpCodes.Callvirt, imports.Module.DefaultImporter.ImportMethod(setMethod));
+                        }
+                        break;
 
                     case CilCode.Ldelem_R4:
                         {
@@ -103,10 +121,6 @@ public static class UnstripTranslator
                             newInstruction = targetBuilder.Add(OpCodes.Callvirt, imports.Module.DefaultImporter.ImportMethod(getMethod));
                         }
                         break;
-
-                    case >= CilCode.Stelem_I and <= CilCode.Stelem_I8:
-                        //This is Il2CppStructArray<T>.set_Item
-                        return false;
 
                     case CilCode.Stelem_R4:
                         {
@@ -189,9 +203,18 @@ public static class UnstripTranslator
                         var newInstruction = targetBuilder.Add(OpCodes.Call, imports.Module.DefaultImporter.ImportMethod(setterMethod));
                         instructionMap.Add(bodyInstruction, newInstruction);
                     }
+                    else if (bodyInstruction.OpCode == OpCodes.Ldflda)
+                    {
+                        var fieldContext = fieldDeclarerContext.Fields.Single(it => it.OriginalField.Name == fieldArg.Name);
+                        var newInstruction = EmitInstanceFieldAddress(target, fieldArg, fieldContext, fieldDeclarer, globalContext, imports);
+                        if (newInstruction == null)
+                            return false;
+
+                        instructionMap.Add(bodyInstruction, newInstruction);
+                    }
                     else
                     {
-                        //Ldflda, Ldsflda
+                        // Ldsflda, the address of a static field
                         return false;
                     }
                 }
@@ -225,6 +248,26 @@ public static class UnstripTranslator
                     instructionMap.Add(bodyInstruction, clrInstruction);
                     continue;
                 }
+                if (classConstructor && bodyInstruction.OpCode.Code == CilCode.Call && methodArg.Name == ".ctor" && methodArg.Signature is { HasThis: true })
+                {
+                    // The object already exists, so a chained base(...) or this(...) runs on it instead of allocating another
+                    var chained = methodArg.DeclaringType?.FullName;
+                    var baseName = original.DeclaringType!.BaseType?.FullName;
+                    CilInstruction? chainInstruction;
+                    if (chained == "System.Object" && chained == baseName)
+                        chainInstruction = targetBuilder.Add(OpCodes.Pop);
+                    else if (chained == baseName || chained == original.DeclaringType.FullName)
+                        chainInstruction = EmitNativeConstructorCall(target.CilMethodBody, methodArg, globalContext, imports);
+                    else
+                        return false;
+
+                    if (chainInstruction == null)
+                        return false;
+
+                    instructionMap.Add(bodyInstruction, chainInstruction);
+                    continue;
+                }
+
                 var methodDeclarer =
                     Pass80UnstripMethods.ResolveTypeInNewAssemblies(globalContext, methodArg.DeclaringType?.ToTypeSignature(), imports, useSystemCorlibType);
                 if (methodDeclarer == null)
@@ -311,27 +354,31 @@ public static class UnstripTranslator
                 {
                     var newInstruction = targetBuilder.Add(OpCodes.Conv_I8);
 
-                    ITypeDefOrRef il2cppTypeArray;
+                    IMethodDescriptor constructor;
                     if (targetType.IsValueType)
                     {
-                        return false;
-                    }
-                    else if (targetType.FullName == "System.String")
-                    {
-                        il2cppTypeArray = imports.Il2CppStringArray.ToTypeDefOrRef();
+                        constructor = imports.Il2CppStructArrayctor_size.Get(targetType);
                     }
                     else
                     {
-                        il2cppTypeArray = imports.Il2CppReferenceArray.MakeGenericInstanceType(targetType).ToTypeDefOrRef();
+                        var il2cppTypeArray = targetType.FullName == "System.String"
+                            ? imports.Il2CppStringArray.ToTypeDefOrRef()
+                            : imports.Il2CppReferenceArray.MakeGenericInstanceType(targetType).ToTypeDefOrRef();
+                        constructor = ReferenceCreator.CreateInstanceMethodReference(".ctor", imports.Module.Void(), il2cppTypeArray, imports.Module.Long());
                     }
-                    targetBuilder.Add(OpCodes.Newobj, imports.Module.DefaultImporter.ImportMethod(
-                        ReferenceCreator.CreateInstanceMethodReference(".ctor", imports.Module.Void(), il2cppTypeArray, imports.Module.Long())));
+
+                    targetBuilder.Add(OpCodes.Newobj, imports.Module.DefaultImporter.ImportMethod(constructor));
                     instructionMap.Add(bodyInstruction, newInstruction);
                 }
                 else if (bodyInstruction.OpCode == OpCodes.Ldelema)
                 {
-                    // Not implemented
-                    return false;
+                    // Only value type elements sit inline in a struct array. A readonly. prefix has to stay right before the
+                    // ldelema it applies to, which the rewrite below cannot keep.
+                    if (!targetType.IsValueType || (targetBuilder.Count > 0 && targetBuilder[targetBuilder.Count - 1].OpCode == OpCodes.Readonly))
+                        return false;
+
+                    var newInstruction = EmitStructArrayElementAddress(target.CilMethodBody, targetType, imports);
+                    instructionMap.Add(bodyInstruction, newInstruction);
                 }
                 else if (bodyInstruction.OpCode == OpCodes.Ldelem)
                 {
@@ -432,6 +479,7 @@ public static class UnstripTranslator
         }
 
         // Copy exception handlers
+        LastFailure = "exception handler, only catch (object) is supported";
         foreach (var exceptionHandler in original.CilMethodBody.ExceptionHandlers)
         {
             var newExceptionHandler = new CilExceptionHandler
@@ -510,7 +558,315 @@ public static class UnstripTranslator
             target.CilMethodBody.ExceptionHandlers.Add(newExceptionHandler);
         }
 
+        LastFailure = null;
         return true;
+    }
+
+    /// <summary>
+    /// Find the element type of the array an operand-less ldelem or stelem works on. The instruction that pushed the
+    /// array is found by walking back through the stack within the same basic block, and its static type gives the element.
+    /// </summary>
+    /// <param name="body">Original method body, with macros expanded</param>
+    /// <param name="instruction">ldelem or stelem instruction</param>
+    /// <param name="depth">Stack slots above the array, 1 for a load and 2 for a store</param>
+    /// <param name="branchTargets">Branch targets of the body, collected on first use</param>
+    /// <returns>Element type, or null when the array's producer or its type cannot be determined</returns>
+    private static TypeSignature? FindArrayElementType(CilMethodBody body, CilInstruction instruction, int depth, ref HashSet<CilInstruction>? branchTargets)
+    {
+        branchTargets ??= CollectBranchTargets(body);
+        var instructions = body.Instructions;
+        var needed = depth;
+        for (var i = instructions.IndexOf(instruction) - 1; i >= 0; i--)
+        {
+            var current = instructions[i];
+            var pushed = current.GetStackPushCount();
+            if (needed < pushed)
+            {
+                if (current.OpCode.Code != CilCode.Dup)
+                {
+                    return pushed == 1 && ProducedType(current) is SzArrayTypeSignature array ? array.BaseType : null;
+                }
+
+                // Either copy is the value dup consumed, which is then on top of the stack
+                needed = 0;
+            }
+            else
+            {
+                needed -= pushed;
+                needed += current.GetStackPopCount(body);
+            }
+
+            // Before a branch target the stack can come from more than one path
+            if (branchTargets.Contains(current))
+                return null;
+        }
+
+        return null;
+    }
+
+    /// <summary>
+    /// Emit the address of a struct array element for a stack of array then index, as array.AsSpan()[index]. The span
+    /// points into the il2cpp array, which the il2cpp GC does not move.
+    /// </summary>
+    /// <param name="body">Target method body</param>
+    /// <param name="elementType">Element type in the generated assemblies</param>
+    /// <param name="imports">Runtime references of the target module</param>
+    /// <returns>First emitted instruction</returns>
+    private static CilInstruction EmitStructArrayElementAddress(CilMethodBody body, TypeSignature elementType, RuntimeAssemblyReferences imports)
+    {
+        var module = imports.Module;
+        var spanType = new TypeReference(module, module.CorLibTypeFactory.CorLibScope, "System", "Span`1");
+        var spanOfElement = new GenericInstanceTypeSignature(spanType, true, [elementType]);
+        var spanOfParameter = new GenericInstanceTypeSignature(spanType, true, [new GenericParameterSignature(GenericParameterType.Type, 0)]);
+
+        var asSpan = new MemberReference(imports.Il2CppStructArray.MakeGenericInstanceType(elementType).ToTypeDefOrRef(), "AsSpan",
+            MethodSignature.CreateInstance(spanOfParameter));
+        var getItem = new MemberReference(spanOfElement.ToTypeDefOrRef(), "get_Item",
+            MethodSignature.CreateInstance(new GenericParameterSignature(GenericParameterType.Type, 0).MakeByReferenceType(), [module.CorLibTypeFactory.Int32]));
+
+        var indexLocal = new CilLocalVariable(module.CorLibTypeFactory.Int32);
+        var spanLocal = new CilLocalVariable(spanOfElement);
+        body.LocalVariables.Add(indexLocal);
+        body.LocalVariables.Add(spanLocal);
+
+        var instructions = body.Instructions;
+        var first = instructions.Add(OpCodes.Stloc, indexLocal);
+        instructions.Add(OpCodes.Call, module.DefaultImporter.ImportMethod(asSpan));
+        instructions.Add(OpCodes.Stloc, spanLocal);
+        instructions.Add(OpCodes.Ldloca, spanLocal);
+        instructions.Add(OpCodes.Ldloc, indexLocal);
+        instructions.Add(OpCodes.Call, module.DefaultImporter.ImportMethod(getItem));
+        return first;
+    }
+
+    /// <summary>
+    /// Start an unstripped class constructor by allocating its il2cpp object and chaining to the wrapper's pointer
+    /// constructor. A class il2cpp still has is allocated as itself. A stripped class is allocated as its il2cpp base,
+    /// so its own fields live on the managed wrapper and its overrides are only seen by managed callers.
+    /// </summary>
+    /// <param name="target">Constructor being generated</param>
+    /// <param name="globalContext">Rewrite context</param>
+    /// <param name="imports">Runtime references of the target module</param>
+    /// <returns>False when neither the class nor its direct base exists in il2cpp</returns>
+    private static bool EmitObjectAllocation(MethodDefinition target, RewriteGlobalContext globalContext, RuntimeAssemblyReferences imports)
+    {
+        var self = target.DeclaringType!;
+        if (self.HasGenericParameters())
+            return false;
+
+        TypeDefinition allocated;
+        ITypeDefOrRef chainTo;
+        if (globalContext.GetContextForNewType(self).OriginalType != null)
+        {
+            allocated = self;
+            chainTo = self;
+        }
+        else
+        {
+            var baseType = self.BaseType?.Resolve();
+            if (baseType == null || baseType.HasGenericParameters() || !HasIl2CppClass(baseType, globalContext))
+                return false;
+
+            allocated = baseType;
+            chainTo = self.BaseType!;
+        }
+
+        var module = imports.Module;
+        var store = new GenericInstanceTypeSignature(imports.Il2CppClassPointerStore.ToTypeDefOrRef(), imports.Il2CppClassPointerStore.IsValueType(),
+            [allocated.ToTypeSignature()]);
+        var classPointer = ReferenceCreator.CreateFieldReference("NativeClassPtr", module.IntPtr(), store.ToTypeDefOrRef());
+
+        var instructions = target.CilMethodBody!.Instructions;
+        instructions.Add(OpCodes.Ldarg_0);
+        instructions.Add(OpCodes.Ldsfld, module.DefaultImporter.ImportField(classPointer));
+        instructions.Add(OpCodes.Call, imports.IL2CPP_il2cpp_object_new.Value);
+        instructions.Add(OpCodes.Call, module.DefaultImporter.ImportMethod(
+            ReferenceCreator.CreateInstanceMethodReference(".ctor", module.Void(), chainTo, module.IntPtr())));
+        return true;
+    }
+
+    /// <summary>
+    /// Replace a base(...) or this(...) call in an unstripped class constructor with ClassInjector.InvokeBaseConstructor,
+    /// which runs that native constructor on the object the prologue allocated
+    /// </summary>
+    /// <param name="body">Target method body</param>
+    /// <param name="constructor">Constructor the original chains to</param>
+    /// <param name="globalContext">Rewrite context</param>
+    /// <param name="imports">Runtime references of the target module</param>
+    /// <returns>First emitted instruction, or null when that constructor does not exist in il2cpp</returns>
+    private static CilInstruction? EmitNativeConstructorCall(CilMethodBody body, IMethodDescriptor constructor, RewriteGlobalContext globalContext,
+        RuntimeAssemblyReferences imports)
+    {
+        var baseType = Pass80UnstripMethods.ResolveTypeInNewAssemblies(globalContext, constructor.DeclaringType!.ToTypeSignature(), imports);
+        var baseDefinition = baseType?.Resolve();
+        var baseContext = baseDefinition == null ? null : TryGetIl2CppContext(baseDefinition, globalContext);
+        var unityConstructor = constructor.Resolve();
+        if (baseType == null || baseContext == null || unityConstructor == null || baseContext.TryGetMethodByUnityAssemblyMethod(unityConstructor) == null)
+            return null;
+
+        // The signature is written against the type's own generic parameters, so it is instantiated with its arguments first
+        var genericContext = new GenericContext(constructor.DeclaringType!.ToTypeSignature() as GenericInstanceTypeSignature, null);
+        var parameterTypes = new List<TypeSignature>();
+        foreach (var parameter in constructor.Signature!.ParameterTypes)
+        {
+            var newType = Pass80UnstripMethods.ResolveTypeInNewAssemblies(globalContext, parameter.InstantiateGenericTypes(genericContext), imports);
+            if (newType == null || newType is ByReferenceTypeSignature or PointerTypeSignature)
+                return null;
+
+            parameterTypes.Add(newType);
+        }
+
+        var module = imports.Module;
+        var objectType = module.CorLibTypeFactory.Object;
+        var locals = parameterTypes.Select(type => new CilLocalVariable(type)).ToArray();
+        foreach (var local in locals)
+            body.LocalVariables.Add(local);
+
+        var instructions = body.Instructions;
+        CilInstruction? first = null;
+        for (var i = locals.Length - 1; i >= 0; i--)
+        {
+            var store = instructions.Add(OpCodes.Stloc, locals[i]);
+            first ??= store;
+        }
+
+        var array = instructions.Add(OpCodes.Ldc_I4, locals.Length);
+        first ??= array;
+        instructions.Add(OpCodes.Newarr, objectType.ToTypeDefOrRef());
+        for (var i = 0; i < locals.Length; i++)
+        {
+            instructions.Add(OpCodes.Dup);
+            instructions.Add(OpCodes.Ldc_I4, i);
+            instructions.Add(OpCodes.Ldloc, locals[i]);
+            if (parameterTypes[i].IsValueType)
+                instructions.Add(OpCodes.Box, parameterTypes[i].ToTypeDefOrRef());
+            instructions.Add(OpCodes.Stelem_Ref);
+        }
+
+        var classInjector = new TypeReference(module, imports.Il2CppObjectBase.ToTypeDefOrRef().Scope, "Il2CppInterop.Runtime.Injection", "ClassInjector");
+        var invoke = new MemberReference(classInjector, "InvokeBaseConstructor",
+            MethodSignature.CreateStatic(module.Void(), 1, [imports.Il2CppObjectBase, objectType.MakeSzArrayType()]));
+        instructions.Add(OpCodes.Call, module.DefaultImporter.ImportMethod(invoke.MakeGenericInstanceMethod([baseType])));
+        return first;
+    }
+
+    /// <summary>
+    /// Emit the address of an instance field inside the il2cpp object, for a stack holding the object. Only fields of
+    /// a blittable value type qualify, because a reference written through the address would skip il2cpp's write barrier.
+    /// </summary>
+    /// <param name="target">Method being generated</param>
+    /// <param name="field">Field the original takes the address of</param>
+    /// <param name="fieldContext">Rewrite context of the field</param>
+    /// <param name="declarer">Field's declaring type in the generated assemblies</param>
+    /// <param name="globalContext">Rewrite context</param>
+    /// <param name="imports">Runtime references of the target module</param>
+    /// <returns>First emitted instruction, or null when the field cannot be addressed</returns>
+    private static CilInstruction? EmitInstanceFieldAddress(MethodDefinition target, IFieldDescriptor field, FieldRewriteContext fieldContext,
+        TypeSignature declarer, RewriteGlobalContext globalContext, RuntimeAssemblyReferences imports)
+    {
+        // A struct wrapper is addressed through a local or argument, which leaves a reference to the wrapper on the stack
+        if (declarer is GenericInstanceTypeSignature || fieldContext.OffsetField == null
+            || fieldContext.DeclaringType.ComputedTypeSpecifics != TypeRewriteContext.TypeSpecifics.ReferenceType)
+            return null;
+
+        var fieldType = Pass80UnstripMethods.ResolveTypeInNewAssemblies(globalContext, field.Signature!.FieldType, imports);
+        if (fieldType == null || !fieldType.IsValueType)
+            return null;
+
+        var module = imports.Module;
+        var instructions = target.CilMethodBody!.Instructions;
+        var first = instructions.Add(OpCodes.Call, imports.IL2CPP_Il2CppObjectBaseToPtrNotNull.Value);
+        if (SignatureComparer.Default.Equals(declarer, target.DeclaringType!.ToTypeSignature()))
+        {
+            instructions.Add(OpCodes.Ldsfld, module.DefaultImporter.ImportField(fieldContext.OffsetField));
+        }
+        else
+        {
+            // The cached offset is private to the declaring type, so another type looks it up by name
+            var store = new GenericInstanceTypeSignature(imports.Il2CppClassPointerStore.ToTypeDefOrRef(), imports.Il2CppClassPointerStore.IsValueType(), [declarer]);
+            instructions.Add(OpCodes.Ldsfld, module.DefaultImporter.ImportField(
+                ReferenceCreator.CreateFieldReference("NativeClassPtr", module.IntPtr(), store.ToTypeDefOrRef())));
+            instructions.Add(OpCodes.Ldstr, field.Name!.Value);
+            instructions.Add(OpCodes.Call, imports.IL2CPP_GetIl2CppField.Value);
+            instructions.Add(OpCodes.Call, imports.IL2CPP_il2cpp_field_get_offset.Value);
+        }
+
+        instructions.Add(OpCodes.Conv_U);
+        instructions.Add(OpCodes.Add);
+        return first;
+    }
+
+    private static bool HasIl2CppClass(TypeDefinition type, RewriteGlobalContext globalContext)
+    {
+        return TryGetIl2CppContext(type, globalContext) != null;
+    }
+
+    /// <summary>
+    /// Get the rewrite context of a generated type that il2cpp still has
+    /// </summary>
+    /// <param name="type">Type in the generated assemblies</param>
+    /// <param name="globalContext">Rewrite context</param>
+    /// <returns>Its context, or null for an unstripped type or one outside the generated assemblies</returns>
+    private static TypeRewriteContext? TryGetIl2CppContext(TypeDefinition type, RewriteGlobalContext globalContext)
+    {
+        if (type.DeclaringModule?.Assembly == null)
+            return null;
+
+        try
+        {
+            var context = globalContext.GetContextForNewType(type);
+            return context.OriginalType != null ? context : null;
+        }
+        catch (KeyNotFoundException)
+        {
+            return null;
+        }
+    }
+
+    private static TypeSignature? ProducedType(CilInstruction instruction)
+    {
+        return instruction.OpCode.Code switch
+        {
+            CilCode.Ldarg => (instruction.Operand as Parameter)?.ParameterType,
+            CilCode.Ldloc => (instruction.Operand as CilLocalVariable)?.VariableType,
+            CilCode.Ldfld or CilCode.Ldsfld => (instruction.Operand as IFieldDescriptor)?.Signature?.FieldType,
+            CilCode.Call or CilCode.Callvirt => (instruction.Operand as IMethodDescriptor)?.Signature?.ReturnType,
+            CilCode.Newarr => (instruction.Operand as ITypeDefOrRef)?.ToTypeSignature().MakeSzArrayType(),
+            CilCode.Castclass or CilCode.Isinst or CilCode.Ldelem => (instruction.Operand as ITypeDefOrRef)?.ToTypeSignature(),
+            _ => null,
+        };
+    }
+
+    private static HashSet<CilInstruction> CollectBranchTargets(CilMethodBody body)
+    {
+        HashSet<CilInstruction> targets = new();
+        foreach (var instruction in body.Instructions)
+        {
+            switch (instruction.Operand)
+            {
+                case CilInstructionLabel { Instruction: not null } label:
+                    targets.Add(label.Instruction);
+                    break;
+                case IReadOnlyList<ICilLabel> labels:
+                    foreach (var label in labels.OfType<CilInstructionLabel>())
+                    {
+                        if (label.Instruction != null)
+                            targets.Add(label.Instruction);
+                    }
+                    break;
+            }
+        }
+
+        foreach (var handler in body.ExceptionHandlers)
+        {
+            foreach (var label in new[] { handler.TryStart, handler.HandlerStart, handler.FilterStart })
+            {
+                if (label is CilInstructionLabel { Instruction: not null } start)
+                    targets.Add(start.Instruction);
+            }
+        }
+
+        return targets;
     }
 
     public static void ReplaceBodyWithException(MethodDefinition newMethod, RuntimeAssemblyReferences imports)

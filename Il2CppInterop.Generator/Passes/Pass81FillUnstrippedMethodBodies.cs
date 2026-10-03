@@ -23,6 +23,7 @@ public static class Pass81FillUnstrippedMethodBodies
             var success = UnstripTranslator.TranslateMethod(unityMethod, newMethod, processedType, imports);
             if (success == false)
             {
+                Logger.Instance.LogTrace("Unstripping {UnityMethod} failed at {Failure}", unityMethod.FullName, UnstripTranslator.LastFailure);
                 methodsFailed++;
                 UnstripTranslator.ReplaceBodyWithException(newMethod, imports);
             }

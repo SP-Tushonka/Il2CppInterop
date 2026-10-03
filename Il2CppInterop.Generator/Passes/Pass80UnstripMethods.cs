@@ -30,7 +30,11 @@ public static class Pass80UnstripMethods
                 foreach (var unityMethod in unityType.Methods)
                 {
                     var isICall = (unityMethod.ImplAttributes & MethodImplAttributes.InternalCall) != 0;
-                    if (unityMethod.IsConstructor && (unityMethod.IsStatic || processedType.ComputedTypeSpecifics != TypeRewriteContext.TypeSpecifics.BlittableStruct)) continue;
+                    // A class constructor allocates its il2cpp object itself, see UnstripTranslator.EmitObjectAllocation
+                    var classConstructor = !IsDelegate(processedType.NewType)
+                        && (processedType.ComputedTypeSpecifics == TypeRewriteContext.TypeSpecifics.ReferenceType
+                            || (processedType.OriginalType == null && processedType.NewType.IsReferenceType()));
+                    if (unityMethod.IsConstructor && (unityMethod.IsStatic || (processedType.ComputedTypeSpecifics != TypeRewriteContext.TypeSpecifics.BlittableStruct && !classConstructor))) continue;
                     if (unityMethod.IsAbstract) continue;
                     if (!unityMethod.HasMethodBody && !isICall) continue; // CoreCLR chokes on no-body methods
 
@@ -66,6 +70,14 @@ public static class Pass80UnstripMethods
                     }
 
                     if (hadBadParameter)
+                    {
+                        methodsIgnored++;
+                        continue;
+                    }
+
+                    // A stripped constructor can map onto the signature of one the wrapper already has, such as the pointer constructor
+                    if (unityMethod.IsConstructor && processedType.NewType.Methods.Any(existing => existing.IsConstructor && !existing.IsStatic
+                        && existing.Signature!.ParameterTypes.SequenceEqual(newMethod.Signature!.ParameterTypes, SignatureComparer.Default)))
                     {
                         methodsIgnored++;
                         continue;
@@ -111,7 +123,7 @@ public static class Pass80UnstripMethods
                         property.SetMethod = newMethod;
                     }
 
-                    var paramsMethod = context.CreateParamsMethod(unityMethod, newMethod, imports,
+                    var paramsMethod = unityMethod.IsConstructor && classConstructor ? null : context.CreateParamsMethod(unityMethod, newMethod, imports,
                         type => ResolveTypeInNewAssemblies(context, type, imports));
                     if (paramsMethod != null) processedType.NewType.Methods.Add(paramsMethod);
 
@@ -122,6 +134,11 @@ public static class Pass80UnstripMethods
 
         Logger.Instance.LogInformation("Restored {UnstrippedMethods} methods", methodsUnstripped);
         Logger.Instance.LogInformation("Failed to restore {IgnoredMethods} methods", methodsIgnored);
+    }
+
+    private static bool IsDelegate(TypeDefinition type)
+    {
+        return type.BaseType?.FullName is "System.MulticastDelegate" or "Il2CppSystem.MulticastDelegate" or "Il2CppSystem.Delegate";
     }
 
     private static PropertyDefinition GetOrCreateProperty(MethodDefinition unityMethod, MethodDefinition newMethod)

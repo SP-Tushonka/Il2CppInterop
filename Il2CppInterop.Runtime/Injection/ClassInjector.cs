@@ -94,22 +94,28 @@ public static unsafe partial class ClassInjector
             .NativeClassPtr); // todo: consider calling base constructor
     }
 
+    // Which fields an injected type wraps never changes, so the reflection that finds them runs once per type
+    private static readonly ConcurrentDictionary<Type, (FieldInfo Field, ConstructorInfo Constructor)[]> ourDerivedFields = new();
+
     public static void DerivedConstructorBody(Il2CppObjectBase objectBase)
     {
         if (objectBase.isWrapped)
             return;
-        var fields = objectBase.GetType()
-            .GetFields(BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.DeclaredOnly)
-            .Where(IsFieldEligible)
-            .ToArray();
-        foreach (var field in fields)
-            field.SetValue(objectBase, field.FieldType.GetConstructor(
-                    BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic, null,
-                    new[] { typeof(Il2CppObjectBase), typeof(string) }, Array.Empty<ParameterModifier>())
-                .Invoke(new object[] { objectBase, field.Name })
-            );
+        foreach (var (field, constructor) in ourDerivedFields.GetOrAdd(objectBase.GetType(), static type => FindDerivedFields(type)))
+            field.SetValue(objectBase, constructor.Invoke([objectBase, field.Name]));
         var ownGcHandle = GCHandle.Alloc(objectBase, GCHandleType.Normal);
         AssignGcHandle(objectBase.Pointer, ownGcHandle);
+    }
+
+    private static (FieldInfo Field, ConstructorInfo Constructor)[] FindDerivedFields(Type type)
+    {
+        return type
+            .GetFields(BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.DeclaredOnly)
+            .Where(IsFieldEligible)
+            .Select(field => (field, field.FieldType.GetConstructor(
+                BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic, null,
+                [typeof(Il2CppObjectBase), typeof(string)], [])!))
+            .ToArray();
     }
 
     public static void AssignGcHandle(IntPtr pointer, GCHandle gcHandle)
@@ -1276,25 +1282,38 @@ public static unsafe partial class ClassInjector
     // so the game base constructor C# would chain to has to run here or the base fields stay uninitialized
     public static void RunNativeBaseConstructor(Il2CppObjectBase obj)
     {
-        var type = obj.GetType().BaseType;
-        while (type != null && IsManagedTypeInjected(type))
-            type = type.BaseType;
-        if (type == null || type == typeof(Il2CppObjectBase) || type == typeof(Il2CppSystem.Object))
-            return;
-
-        var classPointer = Il2CppClassPointerStore.GetNativeClassPointer(type);
-        if (classPointer == IntPtr.Zero)
-            return;
-        var constructor = IL2CPP.il2cpp_class_get_method_from_name(classPointer, ".ctor", 0);
+        var constructor = NativeBaseConstructors.GetOrAdd(obj.GetType(), FindNativeBaseConstructor);
         if (constructor == IntPtr.Zero)
-        {
-            Logger.Instance.LogTrace("{Type} has no parameterless il2cpp constructor to run for {Injected}", type, obj.GetType());
             return;
-        }
 
         var exception = IntPtr.Zero;
         IL2CPP.il2cpp_runtime_invoke(constructor, obj.Pointer, (void**)IntPtr.Zero, ref exception);
         Il2CppException.RaiseExceptionIfNecessary(exception);
+    }
+
+    private static readonly ConcurrentDictionary<Type, IntPtr> NativeBaseConstructors = new();
+
+    private static IntPtr FindNativeBaseConstructor(Type injectedType)
+    {
+        var type = NativeBaseType(injectedType);
+        if (type == null || type == typeof(Il2CppObjectBase) || type == typeof(Il2CppSystem.Object))
+            return IntPtr.Zero;
+
+        var classPointer = Il2CppClassPointerStore.GetNativeClassPointer(type);
+        if (classPointer == IntPtr.Zero)
+            return IntPtr.Zero;
+        var constructor = IL2CPP.il2cpp_class_get_method_from_name(classPointer, ".ctor", 0);
+        if (constructor == IntPtr.Zero)
+            Logger.Instance.LogTrace("{Type} has no parameterless il2cpp constructor to run for {Injected}", type, injectedType);
+        return constructor;
+    }
+
+    private static Type? NativeBaseType(Type injectedType)
+    {
+        var type = injectedType.BaseType;
+        while (type != null && IsManagedTypeInjected(type))
+            type = type.BaseType;
+        return type;
     }
 
     public static void Finalize(IntPtr ptr)
@@ -1466,15 +1485,17 @@ public static unsafe partial class ClassInjector
     private static IntPtr StaticVoidIntPtrInvoker(IntPtr methodPointer, Il2CppMethodInfo* methodInfo, IntPtr obj,
         IntPtr* args)
     {
-        Marshal.GetDelegateForFunctionPointer<VoidCtorDelegate>(methodPointer)(obj);
+        CtorDelegates.GetOrAdd(methodPointer, Marshal.GetDelegateForFunctionPointer<VoidCtorDelegate>)(obj);
         return IntPtr.Zero;
     }
 
     private static void StaticVoidIntPtrInvoker_MetadataV29(IntPtr methodPointer, Il2CppMethodInfo* methodInfo, IntPtr obj,
         IntPtr* args, IntPtr* returnValue)
     {
-        Marshal.GetDelegateForFunctionPointer<VoidCtorDelegate>(methodPointer)(obj);
+        CtorDelegates.GetOrAdd(methodPointer, Marshal.GetDelegateForFunctionPointer<VoidCtorDelegate>)(obj);
     }
+
+    private static readonly ConcurrentDictionary<IntPtr, VoidCtorDelegate> CtorDelegates = new();
 
     private static Delegate CreateTrampoline(MethodInfo monoMethod)
     {

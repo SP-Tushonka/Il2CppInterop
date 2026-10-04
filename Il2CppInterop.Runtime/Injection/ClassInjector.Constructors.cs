@@ -1,4 +1,5 @@
 ﻿using System;
+using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.Runtime.InteropServices;
 using Il2CppInterop.Runtime.InteropTypes;
@@ -20,9 +21,7 @@ public static unsafe partial class ClassInjector
     // DerivedConstructorBody, the base constructor may call virtual methods the injected class overrides.
     public static void InvokeBaseConstructor(Il2CppObjectBase instance, params object?[] arguments)
     {
-        var baseType = instance.GetType().BaseType;
-        while (baseType != null && IsManagedTypeInjected(baseType))
-            baseType = baseType.BaseType;
+        var baseType = NativeBaseType(instance.GetType());
         if (baseType == null)
             throw new ArgumentException($"{instance.GetType()} has no il2cpp base class");
 
@@ -98,23 +97,42 @@ public static unsafe partial class ClassInjector
         return suggestion != null ? $"{type.Name} (il2cpp wants {suggestion})" : type.Name;
     }
 
+    private static readonly ConcurrentDictionary<IntPtr, (IntPtr Method, IntPtr[] Parameters)[]> Constructors = new();
+
     private static IntPtr FindConstructor(IntPtr klass, object?[] arguments)
     {
-        var iterator = IntPtr.Zero;
-        IntPtr method;
-        while ((method = IL2CPP.il2cpp_class_get_methods(klass, ref iterator)) != IntPtr.Zero)
+        foreach (var (method, parameters) in Constructors.GetOrAdd(klass, ListConstructors))
         {
-            if (IL2CPP.il2cpp_method_get_name_(method) != ".ctor" || IL2CPP.il2cpp_method_get_param_count(method) != arguments.Length)
+            if (parameters.Length != arguments.Length)
                 continue;
 
             var matches = true;
             for (var i = 0; i < arguments.Length && matches; i++)
-                matches = ArgumentMatches(IL2CPP.il2cpp_class_from_type(IL2CPP.il2cpp_method_get_param(method, (uint)i)), arguments[i]);
+                matches = ArgumentMatches(parameters[i], arguments[i]);
             if (matches)
                 return method;
         }
 
         return IntPtr.Zero;
+    }
+
+    private static (IntPtr Method, IntPtr[] Parameters)[] ListConstructors(IntPtr klass)
+    {
+        var constructors = new List<(IntPtr, IntPtr[])>();
+        var iterator = IntPtr.Zero;
+        IntPtr method;
+        while ((method = IL2CPP.il2cpp_class_get_methods(klass, ref iterator)) != IntPtr.Zero)
+        {
+            if (IL2CPP.il2cpp_method_get_name_(method) != ".ctor")
+                continue;
+
+            var parameters = new IntPtr[IL2CPP.il2cpp_method_get_param_count(method)];
+            for (var i = 0; i < parameters.Length; i++)
+                parameters[i] = IL2CPP.il2cpp_class_from_type(IL2CPP.il2cpp_method_get_param(method, (uint)i));
+            constructors.Add((method, parameters));
+        }
+
+        return constructors.ToArray();
     }
 
     private static bool ArgumentMatches(IntPtr parameterClass, object? argument)

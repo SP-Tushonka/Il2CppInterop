@@ -66,23 +66,20 @@ internal static class TrampolineHelpers
         return managedType.IsByRef && managedType.GetElementType()!.IsSubclassOf(typeof(Il2CppSystem.ValueType));
     }
 
-    internal static unsafe IntPtr BoxStructAt(IntPtr klass, IntPtr data)
+    internal static IntPtr BoxStructAt(IntPtr klass, IntPtr data)
     {
         var box = IL2CPP.il2cpp_object_new(klass);
-        uint align = 0;
-        var size = IL2CPP.il2cpp_class_value_size(klass, ref align);
-        Buffer.MemoryCopy(data.ToPointer(), IL2CPP.il2cpp_object_unbox(box).ToPointer(), size, size);
+        IL2CPP.CopyValue(box, IL2CPP.il2cpp_object_unbox(box), data, klass);
         return box;
     }
 
-    internal static unsafe void CopyBoxedStructTo(Il2CppObjectBase box, IntPtr data)
+    // The byref can point into a heap object, so references in the struct go through the write barrier
+    internal static void CopyBoxedStructTo(Il2CppObjectBase box, IntPtr data)
     {
         if (box == null) return;
 
         var pointer = box.Pointer;
-        uint align = 0;
-        var size = IL2CPP.il2cpp_class_value_size(IL2CPP.il2cpp_object_get_class(pointer), ref align);
-        Buffer.MemoryCopy(IL2CPP.il2cpp_object_unbox(pointer).ToPointer(), data.ToPointer(), size, size);
+        IL2CPP.CopyValue(IntPtr.Zero, data, IL2CPP.il2cpp_object_unbox(pointer), IL2CPP.il2cpp_object_get_class(pointer));
     }
 
     internal static readonly MethodInfo BoxStructAtMethod = typeof(TrampolineHelpers).GetMethod(nameof(BoxStructAt), BindingFlags.Static | BindingFlags.NonPublic)!;

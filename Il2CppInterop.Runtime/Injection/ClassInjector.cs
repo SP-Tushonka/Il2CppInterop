@@ -1641,12 +1641,12 @@ public static unsafe partial class ClassInjector
                     body.Emit(OpCodes.Castclass, typeof(Il2CppObjectBase));
                 body.Emit(OpCodes.Call, typeof(IL2CPP).GetMethod(nameof(IL2CPP.Il2CppObjectBaseToPtr))!);
             }
-            if (InjectorHelpers.StIndOpcodes.TryGetValue(directType, out var stindOpCodde))
+            if (!directType.IsValueType)
+                body.Emit(OpCodes.Call, typeof(IL2CPP).GetMethod(nameof(IL2CPP.WriteByRef))!);
+            else if (InjectorHelpers.StIndOpcodes.TryGetValue(directType, out var stindOpCodde))
                 body.Emit(stindOpCodde);
-            else if (directType.IsValueType)
-                body.Emit(OpCodes.Stobj, directType);
             else
-                body.Emit(OpCodes.Stind_I);
+                body.Emit(OpCodes.Stobj, directType);
         }
         // body.Emit(OpCodes.Ret); // breaks coreclr
 

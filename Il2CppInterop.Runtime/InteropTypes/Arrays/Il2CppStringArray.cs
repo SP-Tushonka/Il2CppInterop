@@ -27,7 +27,7 @@ public class Il2CppStringArray : Il2CppArrayBase<string>
     public override unsafe string this[int index]
     {
         get => IL2CPP.Il2CppStringToManaged(*GetElementPointer(index));
-        set => *GetElementPointer(index) = IL2CPP.ManagedStringToIl2Cpp(value);
+        set => IL2CPP.WriteReference(Pointer, (IntPtr)GetElementPointer(index), IL2CPP.ManagedStringToIl2Cpp(value));
     }
 #nullable enable
     private unsafe IntPtr* GetElementPointer(int index)

@@ -219,17 +219,11 @@ internal static class CorlibReferences
         return new MemberReference(type.ToTypeDefOrRef(), "get_IsValueType", MethodSignature.CreateInstance(module.Bool()));
     }
 
-    public static MemberReference TypeGetFullName(this ModuleDefinition module)
+    public static MemberReference TypeOpEquality(this ModuleDefinition module)
     {
         var type = module.Type();
-        return new MemberReference(type.ToTypeDefOrRef(), "get_FullName", MethodSignature.CreateInstance(module.String()));
-    }
-
-    public static MemberReference StringEquals(this ModuleDefinition module)
-    {
-        var @string = module.String();
-        MethodSignature signature = MethodSignature.CreateStatic(module.Bool(), [@string, @string]);
-        return new MemberReference(@string.ToTypeDefOrRef(), nameof(string.Equals), signature);
+        MethodSignature signature = MethodSignature.CreateStatic(module.Bool(), [type, type]);
+        return new MemberReference(type.ToTypeDefOrRef(), "op_Equality", signature);
     }
 
     public static MemberReference ExtensionAttributeCtor(this ModuleDefinition module)

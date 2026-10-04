@@ -4,14 +4,14 @@ namespace Il2CppInterop.Runtime.InteropTypes.Fields;
 
 public unsafe class Il2CppStringField
 {
-    private readonly IntPtr _fieldPtr;
+    private readonly int _fieldOffset;
 
     private readonly Il2CppObjectBase _obj;
 
     internal Il2CppStringField(Il2CppObjectBase obj, string fieldName)
     {
         _obj = obj;
-        _fieldPtr = IL2CPP.GetIl2CppField(obj.ObjectClass, fieldName);
+        _fieldOffset = (int)IL2CPP.il2cpp_field_get_offset(IL2CPP.GetIl2CppField(obj.ObjectClass, fieldName));
     }
 
     public string Value
@@ -30,7 +30,7 @@ public unsafe class Il2CppStringField
 
     public void Set(string value)
     {
-        *GetPointerToData() = IL2CPP.ManagedStringToIl2Cpp(value);
+        IL2CPP.WriteReference(IL2CPP.Il2CppObjectBaseToPtrNotNull(_obj), (IntPtr)GetPointerToData(), IL2CPP.ManagedStringToIl2Cpp(value));
     }
 
     public static implicit operator string(Il2CppStringField _this)
@@ -50,6 +50,6 @@ public unsafe class Il2CppStringField
 
     private IntPtr* GetPointerToData()
     {
-        return (IntPtr*)(IL2CPP.Il2CppObjectBaseToPtrNotNull(_obj) + (int)IL2CPP.il2cpp_field_get_offset(_fieldPtr));
+        return (IntPtr*)(IL2CPP.Il2CppObjectBaseToPtrNotNull(_obj) + _fieldOffset);
     }
 }

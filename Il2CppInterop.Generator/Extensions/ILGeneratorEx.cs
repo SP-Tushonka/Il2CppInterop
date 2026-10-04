@@ -49,18 +49,14 @@ public static class ILGeneratorEx
             }
             else
             {
+                // A raw copy would skip the write barrier for references the struct holds
                 body.AddLoadArgument(argumentIndex);
                 body.Add(OpCodes.Call, imports.IL2CPP_Il2CppObjectBaseToPtr.Value);
-                body.Add(OpCodes.Call, imports.IL2CPP_il2cpp_object_unbox.Value);
                 var classPointerTypeRef = new GenericInstanceTypeSignature(imports.Il2CppClassPointerStore.ToTypeDefOrRef(), imports.Il2CppClassPointerStore.IsValueType(), [newType]);
                 var classPointerFieldRef =
                     ReferenceCreator.CreateFieldReference("NativeClassPtr", imports.Module.IntPtr(), classPointerTypeRef.ToTypeDefOrRef());
                 body.Add(OpCodes.Ldsfld, enclosingType.NewType.DeclaringModule!.DefaultImporter.ImportField(classPointerFieldRef));
-                body.Add(OpCodes.Ldc_I4_0);
-                body.Add(OpCodes.Conv_U);
-                body.Add(OpCodes.Call, imports.IL2CPP_il2cpp_class_value_size.Value);
-                body.Add(OpCodes.Cpblk);
-                body.Add(OpCodes.Pop);
+                body.Add(OpCodes.Call, imports.IL2CPP_StoreValue.Value);
             }
         }
         else
@@ -184,9 +180,10 @@ public static class ILGeneratorEx
 
         body.Add(OpCodes.Brtrue, valueTypeNop);
 
-        body.Add(OpCodes.Callvirt, enclosingType.NewType.DeclaringModule!.TypeGetFullName());
-        body.Add(OpCodes.Ldstr, "System.String");
-        body.Add(OpCodes.Call, enclosingType.NewType.DeclaringModule!.StringEquals());
+        // A type comparison rather than FullName and a string compare, which ran on every store
+        body.Add(OpCodes.Ldtoken, imports.Module.String().ToTypeDefOrRef());
+        body.Add(OpCodes.Call, enclosingType.NewType.DeclaringModule!.TypeGetTypeFromHandle());
+        body.Add(OpCodes.Call, enclosingType.NewType.DeclaringModule!.TypeOpEquality());
         body.Add(OpCodes.Brtrue_S, stringNop);
 
         body.AddLoadArgument(argumentIndex);
@@ -197,16 +194,11 @@ public static class ILGeneratorEx
         body.Add(OpCodes.Brfalse_S, storePointerNop);
 
         body.Add(OpCodes.Ldsfld, GenericClassPointerField(imports, enclosingType, newType));
-        body.Add(OpCodes.Call, imports.IL2CPP_il2cpp_class_is_valuetype.Value);
+        body.Add(OpCodes.Call, imports.IL2CPP_ClassIsValueType.Value);
         body.Add(OpCodes.Brfalse_S, storePointerNop);
 
-        body.Add(OpCodes.Call, imports.IL2CPP_il2cpp_object_unbox.Value);
         body.Add(OpCodes.Ldsfld, GenericClassPointerField(imports, enclosingType, newType));
-        body.Add(OpCodes.Ldc_I4_0);
-        body.Add(OpCodes.Conv_U);
-        body.Add(OpCodes.Call, imports.IL2CPP_il2cpp_class_value_size.Value);
-        body.Add(OpCodes.Cpblk);
-        body.Add(OpCodes.Pop);
+        body.Add(OpCodes.Call, imports.IL2CPP_StoreValue.Value);
         body.Add(OpCodes.Br_S, finalNop);
 
         storePointerNop.Instruction = body.Add(OpCodes.Nop);

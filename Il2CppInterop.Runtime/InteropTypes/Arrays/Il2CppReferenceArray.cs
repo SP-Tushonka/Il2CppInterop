@@ -42,7 +42,7 @@ public class Il2CppReferenceArray<T> : Il2CppArrayBase<T> where T : class?
     public override T this[int index]
     {
         get => WrapElement(GetElementPointer(index))!;
-        set => StoreValue(GetElementPointer(index), IL2CPP.Il2CppObjectBaseToPtr((Il2CppObjectBase?)(object?)value));
+        set => StoreValue(Pointer, GetElementPointer(index), IL2CPP.Il2CppObjectBaseToPtr((Il2CppObjectBase?)(object?)value));
     }
 
     private IntPtr GetElementPointer(int index)
@@ -59,30 +59,20 @@ public class Il2CppReferenceArray<T> : Il2CppArrayBase<T> where T : class?
         return new Il2CppReferenceArray<T>(arr);
     }
 
-    private static unsafe void StoreValue(IntPtr targetPointer, IntPtr valuePointer)
+    private static void StoreValue(IntPtr arrayPointer, IntPtr targetPointer, IntPtr valuePointer)
     {
         if (ourElementIsValueType)
-        {
-            if (valuePointer == IntPtr.Zero)
-                throw new NullReferenceException();
-
-            var valueRawPointer = (byte*)IL2CPP.il2cpp_object_unbox(valuePointer);
-            var targetRawPointer = (byte*)targetPointer;
-
-            Unsafe.CopyBlock(targetRawPointer, valueRawPointer, (uint)ourElementTypeSize);
-        }
+            IL2CPP.StoreValue(arrayPointer, targetPointer, valuePointer, Il2CppClassPointerStore<T>.NativeClassPtr);
         else
-        {
-            *(IntPtr*)targetPointer = valuePointer;
-        }
+            IL2CPP.WriteReference(arrayPointer, targetPointer, valuePointer);
     }
 
     private static unsafe T? WrapElement(IntPtr memberPointer)
     {
         if (ourElementIsValueType)
-            memberPointer = IL2CPP.il2cpp_value_box(Il2CppClassPointerStore<T>.NativeClassPtr, memberPointer);
-        else
-            memberPointer = *(IntPtr*)memberPointer;
+            return Il2CppObjectBase.WrapValueBox<T>(IL2CPP.il2cpp_value_box(Il2CppClassPointerStore<T>.NativeClassPtr, memberPointer));
+
+        memberPointer = *(IntPtr*)memberPointer;
 
         if (memberPointer == IntPtr.Zero)
             return default;

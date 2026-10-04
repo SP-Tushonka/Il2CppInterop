@@ -4,14 +4,14 @@ namespace Il2CppInterop.Runtime.InteropTypes.Fields;
 
 public unsafe class Il2CppValueField<T> where T : unmanaged
 {
-    private readonly IntPtr _fieldPtr;
+    private readonly int _fieldOffset;
 
     private readonly Il2CppObjectBase _obj;
 
     internal Il2CppValueField(Il2CppObjectBase obj, string fieldName)
     {
         _obj = obj;
-        _fieldPtr = IL2CPP.GetIl2CppField(obj.ObjectClass, fieldName);
+        _fieldOffset = (int)IL2CPP.il2cpp_field_get_offset(IL2CPP.GetIl2CppField(obj.ObjectClass, fieldName));
     }
 
     public T Value
@@ -42,6 +42,6 @@ public unsafe class Il2CppValueField<T> where T : unmanaged
 
     private T* GetPointerToData()
     {
-        return (T*)(IL2CPP.Il2CppObjectBaseToPtrNotNull(_obj) + (int)IL2CPP.il2cpp_field_get_offset(_fieldPtr));
+        return (T*)(IL2CPP.Il2CppObjectBaseToPtrNotNull(_obj) + _fieldOffset);
     }
 }

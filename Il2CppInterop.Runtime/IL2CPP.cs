@@ -409,19 +409,7 @@ public static unsafe partial class IL2CPP
         return (T)trampoline.CreateDelegate(typeof(T));
     }
 
-    private readonly struct NullableLayout
-    {
-        public readonly IntPtr Constructor;
-        public readonly int HasValueOffset;
-        public readonly int ValueOffset;
-
-        public NullableLayout(IntPtr constructor, int hasValueOffset, int valueOffset)
-        {
-            Constructor = constructor;
-            HasValueOffset = hasValueOffset;
-            ValueOffset = valueOffset;
-        }
-    }
+    private readonly record struct NullableLayout(IntPtr ValueClass, int HasValueOffset, int ValueOffset);
 
     private static readonly ConcurrentDictionary<IntPtr, NullableLayout> NullableLayouts = new();
 
@@ -431,9 +419,10 @@ public static unsafe partial class IL2CPP
         {
             il2cpp_runtime_class_init(klass);
             var header = IntPtr.Size * 2;
+            var valueField = GetIl2CppField(klass, "value");
             var hasValue = (int)il2cpp_field_get_offset(GetIl2CppField(klass, "hasValue")) - header;
-            var value = (int)il2cpp_field_get_offset(GetIl2CppField(klass, "value")) - header;
-            return new NullableLayout(il2cpp_class_get_method_from_name(klass, ".ctor", 1), hasValue, value);
+            var value = (int)il2cpp_field_get_offset(valueField) - header;
+            return new NullableLayout(il2cpp_class_from_type(il2cpp_field_get_type(valueField)), hasValue, value);
         });
     }
 
@@ -444,12 +433,9 @@ public static unsafe partial class IL2CPP
         if (valueData == IntPtr.Zero)
             return box;
 
-        // The constructor copies in il2cpp code, which keeps the GC write barrier a memcpy would skip
-        var args = stackalloc void*[1];
-        args[0] = (void*)valueData;
-        var exception = IntPtr.Zero;
-        il2cpp_runtime_invoke(layout.Constructor, il2cpp_object_unbox(box), args, ref exception);
-        Il2CppException.RaiseExceptionIfNecessary(exception);
+        var data = il2cpp_object_unbox(box);
+        CopyValue(box, data + layout.ValueOffset, valueData, layout.ValueClass);
+        *(byte*)(data + layout.HasValueOffset) = 1;
         return box;
     }
 
@@ -622,6 +608,61 @@ public static unsafe partial class IL2CPP
     {
         // ignore obj
         *(IntPtr*)targetAddress = value;
+    }
+
+    // Older il2cpp builds have no barrier export, the generator makes the same choice when it writes setters
+    private static class WriteBarrier
+    {
+        public static readonly bool Exported =
+            NativeLibrary.TryGetExport(NativeLibrary.Load("GameAssembly"), "il2cpp_gc_wbarrier_set_field", out _);
+    }
+
+    /// <summary>
+    /// Stores an object reference into il2cpp memory through the GC write barrier. Incremental collection misses a
+    /// reference stored without it and can free the object. il2cpp ignores obj, so a byref target passes zero.
+    /// </summary>
+    public static void WriteReference(IntPtr obj, IntPtr target, IntPtr value)
+    {
+        if (WriteBarrier.Exported)
+            il2cpp_gc_wbarrier_set_field(obj, target, value);
+        else
+            *(IntPtr*)target = value;
+    }
+
+    /// <summary>
+    /// Stores an object reference through a byref, which can point into a heap object, see <see cref="WriteReference"/>.
+    /// </summary>
+    public static void WriteByRef(IntPtr target, IntPtr value)
+    {
+        WriteReference(IntPtr.Zero, target, value);
+    }
+
+    /// <summary>
+    /// Copies a struct of class klass into il2cpp memory. il2cpp only exports the single slot barrier, so when the
+    /// struct holds references every pointer sized slot is stored again through it after the copy.
+    /// </summary>
+    public static void CopyValue(IntPtr obj, IntPtr target, IntPtr source, IntPtr klass)
+    {
+        // Both lookups are cheaper as native calls than through a dictionary keyed by class
+        uint align = 0;
+        var size = il2cpp_class_value_size(klass, ref align);
+
+        Buffer.MemoryCopy((void*)source, (void*)target, size, size);
+        if (!WriteBarrier.Exported || !il2cpp_class_has_references(klass))
+            return;
+
+        for (var offset = 0; offset + IntPtr.Size <= size; offset += IntPtr.Size)
+            il2cpp_gc_wbarrier_set_field(obj, target + offset, *(IntPtr*)(target + offset));
+    }
+
+    /// <summary>
+    /// Stores the struct a box holds into il2cpp memory, see <see cref="CopyValue"/>.
+    /// </summary>
+    public static void StoreValue(IntPtr obj, IntPtr target, IntPtr box, IntPtr klass)
+    {
+        if (box == IntPtr.Zero)
+            throw new NullReferenceException();
+        CopyValue(obj, target, il2cpp_object_unbox(box), klass);
     }
 
     // IL2CPP Functions

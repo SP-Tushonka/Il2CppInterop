@@ -360,7 +360,10 @@ internal unsafe class Il2CppDetourMethodPatcher : MethodPatcher
             il.Emit(OpCodes.Ldloc, indirectVariables[i]);
             var directType = managedParams[i].GetElementType();
             EmitConvertManagedTypeToIL2CPP(il, directType);
-            il.Emit(StIndOpcodes.TryGetValue(directType, out var stindOpCodde) ? stindOpCodde : OpCodes.Stind_I);
+            if (!directType.IsValueType)
+                il.Emit(OpCodes.Call, AccessTools.Method(typeof(IL2CPP), nameof(IL2CPP.WriteByRef)));
+            else
+                il.Emit(StIndOpcodes.TryGetValue(directType, out var stindOpCodde) ? stindOpCodde : OpCodes.Stind_I);
         }
 
         // Handle any lingering exceptions
@@ -478,9 +481,6 @@ internal unsafe class Il2CppDetourMethodPatcher : MethodPatcher
 
             if (isNullable)
             {
-                uint align = 0;
-                var valueSize = IL2CPP.il2cpp_class_value_size(classPtr, ref align);
-
                 il.Emit(OpCodes.Ldc_I8, classPtr.ToInt64());
                 il.Emit(OpCodes.Conv_I);
                 il.Emit(OpCodes.Call, AccessTools.Method(typeof(IL2CPP), nameof(IL2CPP.il2cpp_object_new)));
@@ -488,9 +488,7 @@ internal unsafe class Il2CppDetourMethodPatcher : MethodPatcher
                 il.Emit(OpCodes.Stloc, objLocal);
                 il.Emit(TrampolineHelpers.IsPassedByValue(managedParamType) ? OpCodes.Ldarga_S : OpCodes.Ldarg, argIndex);
                 il.Emit(OpCodes.Ldloc, objLocal);
-                il.Emit(OpCodes.Call, AccessTools.Method(typeof(IL2CPP), nameof(IL2CPP.il2cpp_object_unbox)));
-                il.Emit(OpCodes.Ldc_I4, (int)valueSize);
-                il.Emit(OpCodes.Call, AccessTools.Method(typeof(Il2CppDetourMethodPatcher), nameof(CopyMemory)));
+                il.Emit(OpCodes.Call, AccessTools.Method(typeof(Il2CppDetourMethodPatcher), nameof(CopyIntoBox)));
                 il.Emit(OpCodes.Ldloc, objLocal);
             }
             else
@@ -582,6 +580,7 @@ internal unsafe class Il2CppDetourMethodPatcher : MethodPatcher
         }
     }
 
-    private static void CopyMemory(IntPtr src, IntPtr dest, int size) =>
-        Buffer.MemoryCopy(src.ToPointer(), dest.ToPointer(), size, size);
+    // The new box is heap memory, so a Nullable carrying a reference has to go through the write barrier
+    private static void CopyIntoBox(IntPtr source, IntPtr box) =>
+        IL2CPP.CopyValue(box, IL2CPP.il2cpp_object_unbox(box), source, IL2CPP.il2cpp_object_get_class(box));
 }

@@ -52,6 +52,7 @@ public class RuntimeAssemblyReferences
     public Lazy<IMethodDefOrRef> IL2CPP_GetDirectCallPointer { get; private set; }
     public Lazy<IMethodDefOrRef> IL2CPP_MethodBelongsToValueType { get; private set; }
     public Lazy<IMethodDefOrRef> IL2CPP_ClassIsValueType { get; private set; }
+    public Lazy<IMethodDefOrRef> IL2CPP_StoreValue { get; private set; }
     public Lazy<IMethodDefOrRef> IL2CPP_il2cpp_value_box { get; private set; }
     public Lazy<IMethodDefOrRef> IL2CPP_BoxNullable { get; private set; }
     public Lazy<IMethodDefOrRef> IL2CPP_RebuildNullableBox { get; private set; }
@@ -389,6 +390,14 @@ public class RuntimeAssemblyReferences
         {
             var mr = ReferenceCreator.CreateStaticMethodReference("ClassIsValueType", ResolveType("System.Boolean"),
                 ResolveType("Il2CppInterop.Runtime.IL2CPP").ToTypeDefOrRef(), ResolveType("System.IntPtr"));
+            return mr;
+        });
+
+        IL2CPP_StoreValue = new Lazy<IMethodDefOrRef>(() =>
+        {
+            var mr = ReferenceCreator.CreateStaticMethodReference("StoreValue", ResolveType("System.Void"),
+                ResolveType("Il2CppInterop.Runtime.IL2CPP").ToTypeDefOrRef(), ResolveType("System.IntPtr"),
+                ResolveType("System.IntPtr"), ResolveType("System.IntPtr"), ResolveType("System.IntPtr"));
             return mr;
         });
 

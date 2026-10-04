@@ -2,6 +2,7 @@ using System;
 using System.Collections;
 using System.Collections.Generic;
 using System.Diagnostics.CodeAnalysis;
+using System.Linq.Expressions;
 using Il2CppInterop.Runtime.Runtime;
 
 namespace Il2CppInterop.Runtime.InteropTypes.Arrays;
@@ -133,17 +134,35 @@ public abstract class Il2CppArrayBase<T> : Il2CppArrayBase, IList<T>, IReadOnlyL
     {
         if (pointer == IntPtr.Zero) return null;
 
-        if (typeof(T) == typeof(string))
-            return new Il2CppStringArray(pointer) as Il2CppArrayBase<T>;
-        if (typeof(T).IsValueType) // can't construct required types here directly because of unfulfilled generic constraint
-            return Activator.CreateInstance(typeof(Il2CppStructArray<>).MakeGenericType(typeof(T)), pointer) as
-                Il2CppArrayBase<T>;
-        if (typeof(Il2CppObjectBase).IsAssignableFrom(typeof(T)) || typeof(T).IsInterface)
-            return Activator.CreateInstance(typeof(Il2CppReferenceArray<>).MakeGenericType(typeof(T)), pointer) as
-                Il2CppArrayBase<T>;
+        // A fresh wrapper per read took a GC handle and a finalizer each time, about two microseconds
+        return Il2CppObjectPool.GetOrCreate(pointer, GenericArrayFactory.Create);
+    }
 
-        throw new ArgumentException(
-            $"{typeof(T)} is not a value type, not a string and not an IL2CPP object; it can't be used in IL2CPP arrays");
+    // The array types constrain T in ways this class cannot, so their constructor is compiled once per T
+    private static class GenericArrayFactory
+    {
+        public static readonly Func<IntPtr, Il2CppArrayBase<T>> Create = Build();
+
+        private static Func<IntPtr, Il2CppArrayBase<T>> Build()
+        {
+            if (typeof(T) == typeof(string))
+                return pointer => (Il2CppArrayBase<T>)(object)new Il2CppStringArray(pointer);
+
+            Type arrayType;
+            if (typeof(T).IsValueType)
+                arrayType = typeof(Il2CppStructArray<>).MakeGenericType(typeof(T));
+            else if (typeof(Il2CppObjectBase).IsAssignableFrom(typeof(T)) || typeof(T).IsInterface)
+                arrayType = typeof(Il2CppReferenceArray<>).MakeGenericType(typeof(T));
+            else
+                return _ => throw new ArgumentException(
+                    $"{typeof(T)} is not a value type, not a string and not an IL2CPP object; it can't be used in IL2CPP arrays");
+
+            var pointerParameter = Expression.Parameter(typeof(IntPtr));
+            var constructor = arrayType.GetConstructor([typeof(IntPtr)])!;
+            return Expression.Lambda<Func<IntPtr, Il2CppArrayBase<T>>>(
+                Expression.Convert(Expression.New(constructor, pointerParameter), typeof(Il2CppArrayBase<T>)),
+                pointerParameter).Compile();
+        }
     }
 
     private class IndexEnumerator : IEnumerator<T>

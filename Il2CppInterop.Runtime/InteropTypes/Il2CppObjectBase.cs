@@ -13,7 +13,7 @@ public partial class Il2CppObjectBase : IIl2CppObjectBase
 {
     private static readonly MethodInfo _unboxMethod = typeof(Il2CppObjectBase).GetMethod(nameof(Unbox));
     internal bool isWrapped;
-    internal IntPtr pooledPtr;
+    internal WeakReference<Il2CppObjectBase>? poolEntry;
 
     private nint myGcHandle;
 
@@ -209,25 +209,21 @@ public partial class Il2CppObjectBase : IIl2CppObjectBase
             throw new ArgumentException($"{typeof(T)} is not an Il2Cpp reference type");
 
         var ownClass = IL2CPP.il2cpp_object_get_class(Pointer);
-        if (!IL2CPP.il2cpp_class_is_assignable_from(nestedTypeClassPointer, ownClass))
+        if (ownClass != nestedTypeClassPointer && !IL2CPP.il2cpp_class_is_assignable_from(nestedTypeClassPointer, ownClass))
             return null;
 
         if (this is T self)
             return self;
 
-        if (RuntimeSpecificsStore.IsInjected(ownClass))
-        {
-            if (ClassInjectorBase.GetMonoObjectFromIl2CppPointer(Pointer) is T monoObject) return monoObject;
-        }
-
-        return Il2CppObjectPool.Create<T>(Pointer, ownClass, out _);
+        // The pool also hands back an injected object's managed instance, and a fresh wrapper per cast cost a GC handle and a finalizer
+        return Il2CppObjectPool.Get<T>(Pointer);
     }
 
     ~Il2CppObjectBase()
     {
         IL2CPP.il2cpp_gchandle_free(myGcHandle);
 
-        if (pooledPtr == IntPtr.Zero) return;
-        Il2CppObjectPool.Remove(pooledPtr);
+        if (poolEntry == null) return;
+        Il2CppObjectPool.Remove(myPointer, poolEntry);
     }
 }

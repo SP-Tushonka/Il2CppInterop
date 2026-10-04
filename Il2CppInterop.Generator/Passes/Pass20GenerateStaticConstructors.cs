@@ -1,5 +1,6 @@
 using AsmResolver.DotNet;
 using AsmResolver.DotNet.Signatures;
+using AsmResolver.PE.DotNet.Metadata.Tables;
 using Il2CppInterop.Common;
 using Il2CppInterop.Generator.Contexts;
 using Il2CppInterop.Generator.Extensions;
@@ -162,6 +163,20 @@ public static class Pass20GenerateStaticConstructors
             }
 
             ctorBuilder.Add(OpCodes.Stsfld, method.NonGenericMethodInfoPointerField);
+
+            if (!CanCallDirectly(typeContext, method))
+                continue;
+
+            var directCallField = new FieldDefinition("NativeDirectCallPtr_" + method.UnmangledNameWithSignature,
+                FieldAttributes.Private | FieldAttributes.Static | FieldAttributes.InitOnly,
+                assemblyContext.Imports.Module.IntPtr());
+            newType.Fields.Add(directCallField);
+            method.DirectCallPointerField = new MemberReference(typeContext.SelfSubstitutedRef, directCallField.Name,
+                new FieldSignature(directCallField.Signature!.FieldType));
+
+            ctorBuilder.Add(OpCodes.Ldsfld, method.NonGenericMethodInfoPointerField);
+            ctorBuilder.Add(OpCodes.Call, assemblyContext.Imports.IL2CPP_GetDirectCallPointer.Value);
+            ctorBuilder.Add(OpCodes.Stsfld, method.DirectCallPointerField);
         }
 
         foreach (var method in typeContext.Methods)
@@ -179,6 +194,45 @@ public static class Pass20GenerateStaticConstructors
         }
 
         ctorBuilder.Add(OpCodes.Ret);
+    }
+
+    // An instance method on a class that Pass50 does not dispatch virtually, either parameterless or void taking one
+    // primitive. Whether its native body really is trivial enough is only known once the game is running.
+    private static bool CanCallDirectly(TypeRewriteContext typeContext, MethodRewriteContext method)
+    {
+        var original = method.OriginalMethod;
+        if (typeContext.ComputedTypeSpecifics != TypeRewriteContext.TypeSpecifics.ReferenceType || typeContext.OriginalType.IsInterface)
+            return false;
+
+        if (original.IsStatic || original.IsConstructor || original.HasGenericParameters())
+            return false;
+
+        if (!original.DeclaringType!.IsSealed && (method.InterfaceMethodInfoPointerField != null || !original.IsFinal) &&
+            (original.IsVirtual || original.IsAbstract))
+            return false;
+
+        var returnType = original.Signature!.ReturnType;
+        var returnsVoid = returnType.ElementType == ElementType.Void;
+        if (original.Parameters.Count == 1)
+            return returnsVoid && IsPrimitive(original.Parameters[0].ParameterType);
+        if (original.Parameters.Count != 0)
+            return false;
+
+        if (returnsVoid || IsPrimitive(returnType))
+            return true;
+        if (returnType is CorLibTypeSignature corLibType)
+            return corLibType.ElementType is ElementType.String or ElementType.Object;
+        return returnType is not GenericParameterSignature && !returnType.IsPointerLike() && !returnType.IsValueType();
+    }
+
+    private static bool IsPrimitive(TypeSignature type)
+    {
+        if (type is CorLibTypeSignature corLibType)
+            return corLibType.ElementType is ElementType.Boolean or ElementType.Char or ElementType.I1 or ElementType.U1 or
+                ElementType.I2 or ElementType.U2 or ElementType.I4 or ElementType.U4 or ElementType.I8 or ElementType.U8 or
+                ElementType.R4 or ElementType.R8 or ElementType.I or ElementType.U;
+
+        return type is not GenericParameterSignature && !type.IsPointerLike() && type.IsValueType() && type.Resolve()?.IsEnum == true;
     }
 
     private static void EmitLoadTypeNameString(this ILProcessor ctorBuilder, RuntimeAssemblyReferences imports,

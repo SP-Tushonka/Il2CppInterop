@@ -111,6 +111,7 @@ public class MethodRewriteContext
     public ITypeDefOrRef? GenericInstantiationsStoreSelfSubstRef { get; private set; }
     public ITypeDefOrRef? GenericInstantiationsStoreSelfSubstMethodRef { get; private set; }
     public MemberReference NonGenericMethodInfoPointerField { get; private set; } = null!; // Initialized in CtorPhase2
+    public MemberReference? DirectCallPointerField { get; set; } // Created in Pass20 for methods a direct call can serve
 
     public bool HasExtensionAttribute { get; }
 

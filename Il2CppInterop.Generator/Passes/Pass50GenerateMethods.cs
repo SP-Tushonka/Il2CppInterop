@@ -2,6 +2,7 @@ using AsmResolver.DotNet;
 using AsmResolver.DotNet.Code.Cil;
 using AsmResolver.DotNet.Signatures;
 using AsmResolver.PE.DotNet.Cil;
+using AsmResolver.PE.DotNet.Metadata.Tables;
 using Il2CppInterop.Generator.Contexts;
 using Il2CppInterop.Generator.Extensions;
 using Il2CppInterop.Generator.Utils;
@@ -69,6 +70,11 @@ public static class Pass50GenerateMethods
 
                     if (nextInstruction != null)
                         nextInstruction.Instruction = bodyBuilder.Add(OpCodes.Nop);
+
+                    // Ahead of the null check below, which its own conversion of this already performs
+                    var directCallPointerField = methodRewriteContext.DirectCallPointerField;
+                    if (directCallPointerField != null)
+                        EmitDirectCall(bodyBuilder, methodRewriteContext, typeContext, directCallPointerField, resultVar);
 
                     if (typeContext.ComputedTypeSpecifics != TypeRewriteContext.TypeSpecifics.BlittableStruct)
                     {
@@ -313,4 +319,57 @@ public static class Pass50GenerateMethods
             }
         }
     }
+
+    // Calls the native body straight through when GetDirectCallPointer accepted it and falls through to the
+    // il2cpp_runtime_invoke path when it did not. The direct call returns raw values where the invoke boxes them.
+    private static void EmitDirectCall(ILProcessor body, MethodRewriteContext method, TypeRewriteContext typeContext,
+        MemberReference pointerField, CilLocalVariable resultVar)
+    {
+        var imports = typeContext.AssemblyContext.Imports;
+        var originalMethod = method.OriginalMethod;
+        var newMethod = method.NewMethod;
+        var invokePath = new CilInstructionLabel();
+
+        body.Add(OpCodes.Ldsfld, pointerField);
+        body.Add(OpCodes.Brfalse, invokePath);
+
+        body.EmitObjectToPointer(originalMethod.DeclaringType!.ToTypeSignature(), newMethod.DeclaringType!.ToTypeSignature(),
+            typeContext, 0, true, false, true, true, out _);
+        List<TypeSignature> nativeParameters = [imports.Module.IntPtr()];
+        if (newMethod.Parameters.Count == 1)
+        {
+            body.AddLoadArgument(1);
+            nativeParameters.Add(NativePrimitive(newMethod.Parameters[0].ParameterType, imports));
+        }
+        nativeParameters.Add(imports.Module.IntPtr());
+        body.Add(OpCodes.Ldsfld, method.NonGenericMethodInfoPointerField);
+        body.Add(OpCodes.Ldsfld, pointerField);
+
+        var returnType = originalMethod.Signature!.ReturnType;
+        var nativeReturnType = returnType.ElementType == ElementType.Void ? imports.Module.Void()
+            : !returnType.IsValueType() ? imports.Module.IntPtr() : NativePrimitive(newMethod.Signature!.ReturnType, imports);
+        body.Add(OpCodes.Calli, new StandAloneSignature(new MethodSignature(CallingConventionAttributes.C, nativeReturnType, nativeParameters)));
+
+        if (returnType.ElementType == ElementType.Boolean)
+        {
+            body.Add(OpCodes.Ldc_I4_0);
+            body.Add(OpCodes.Cgt_Un);
+        }
+        else if (!returnType.IsValueType() && returnType.ElementType != ElementType.Void)
+        {
+            body.Add(OpCodes.Stloc, resultVar);
+            body.EmitPointerToObject(returnType, newMethod.Signature!.ReturnType, typeContext, resultVar, false, true);
+        }
+
+        body.Add(OpCodes.Ret);
+        invokePath.Instruction = body.Add(OpCodes.Nop);
+    }
+
+    // il2cpp bools are one byte and chars two, which unmanaged calli would marshal as a four byte BOOL and an ANSI char
+    private static TypeSignature NativePrimitive(TypeSignature type, RuntimeAssemblyReferences imports) => type.ElementType switch
+    {
+        ElementType.Boolean => imports.Module.Byte(),
+        ElementType.Char => imports.Module.UShort(),
+        _ => type,
+    };
 }

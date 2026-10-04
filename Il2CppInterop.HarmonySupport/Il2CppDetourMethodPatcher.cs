@@ -178,6 +178,14 @@ internal unsafe class Il2CppDetourMethodPatcher : MethodPatcher
         dmd.Definition.Name = "UnhollowedWrapper_" + dmd.Definition.Name;
         var cursor = new ILCursor(new ILContext(dmd.Definition));
 
+        // A direct call enters the native body at its detoured entry, so the copy always takes the invoke path
+        while (cursor.TryGotoNext(x => x.MatchLdsfld(out var field) && field.Name.StartsWith("NativeDirectCallPtr_")))
+        {
+            cursor.Remove();
+            cursor.Emit(Mono.Cecil.Cil.OpCodes.Ldc_I4_0).Emit(Mono.Cecil.Cil.OpCodes.Conv_I);
+        }
+
+        cursor.Goto(0);
 
         // Remove the virtual lookup. It would resolve back to the detoured method and recurse
         if (cursor.TryGotoNext(x => x.MatchLdarg(0),
@@ -188,22 +196,28 @@ internal unsafe class Il2CppDetourMethodPatcher : MethodPatcher
                      x.MatchCall(typeof(IL2CPP), nameof(IL2CPP.il2cpp_object_get_virtual_method))))
         {
             cursor.RemoveRange(4);
-        }
-        else
-        {
-            cursor.Goto(0)
-                .GotoNext(x =>
-                    x.MatchLdsfld(Il2CppInteropUtils
-                        .GetIl2CppMethodInfoPointerFieldForGeneratedMethod(Original)))
-                .Remove();
+            EmitTrampolineMethodInfo(cursor);
+            return dmd;
         }
 
-        // Replace original IL2CPPMethodInfo pointer with a modified one that points to the trampoline
+        // A wrapper with a direct call loads the method info for it as well, ahead of the invoke
+        var methodInfoField = Il2CppInteropUtils.GetIl2CppMethodInfoPointerFieldForGeneratedMethod(Original);
+        cursor.GotoNext(x => x.MatchLdsfld(methodInfoField));
+        do
+        {
+            cursor.Remove();
+            EmitTrampolineMethodInfo(cursor);
+        } while (cursor.TryGotoNext(x => x.MatchLdsfld(methodInfoField)));
+
+        return dmd;
+    }
+
+    // The modified method info points at the trampoline to the original code rather than at the detour
+    private void EmitTrampolineMethodInfo(ILCursor cursor)
+    {
         cursor
             .Emit(Mono.Cecil.Cil.OpCodes.Ldc_I8, modifiedNativeMethodInfo.Pointer.ToInt64())
             .Emit(Mono.Cecil.Cil.OpCodes.Conv_I);
-
-        return dmd;
     }
 
     // Tries to guess whether a function needs a return buffer for the return struct, in all cases except win64 it's undefined behaviour

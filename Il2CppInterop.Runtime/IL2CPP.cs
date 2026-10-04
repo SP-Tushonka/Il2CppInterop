@@ -8,12 +8,14 @@ using System.Runtime.CompilerServices;
 using System.Runtime.InteropServices;
 using System.Text;
 using System.Text.RegularExpressions;
+using Iced.Intel;
 using Il2CppInterop.Common;
 using Il2CppInterop.Common.Attributes;
 using Il2CppInterop.Runtime.InteropTypes;
 using Il2CppInterop.Runtime.InteropTypes.Arrays;
 using Il2CppInterop.Runtime.Runtime;
 using Microsoft.Extensions.Logging;
+using Decoder = Iced.Intel.Decoder;
 
 namespace Il2CppInterop.Runtime;
 
@@ -221,6 +223,93 @@ public static unsafe class IL2CPP
     public static IntPtr Il2CppObjectBaseToPtrNotNull(Il2CppObjectBase obj)
     {
         return obj?.Pointer ?? throw new NullReferenceException();
+    }
+
+    /// <summary>
+    /// Returns the native body of an instance method when it is at most one load from its receiver, one constant,
+    /// or one store of its first argument into the receiver, followed by a ret. Such a body cannot throw, so wrappers
+    /// call it directly instead of through il2cpp_runtime_invoke.
+    /// </summary>
+    public static IntPtr GetDirectCallPointer(IntPtr methodInfo)
+    {
+        if (methodInfo == IntPtr.Zero || !Environment.Is64BitProcess)
+            return IntPtr.Zero;
+
+        var code = UnityVersionHandler.Wrap((Il2CppMethodInfo*)methodInfo).MethodPointer;
+        if (code == IntPtr.Zero)
+            return IntPtr.Zero;
+
+        var decoder = Decoder.Create(64, new UnmanagedCodeReader((byte*)code, 32));
+        decoder.IP = (ulong)code;
+
+        decoder.Decode(out var first);
+        if (decoder.LastError != DecoderError.None)
+            return IntPtr.Zero;
+        if (IsRet(first))
+            return code;
+        if (!IsReceiverLoad(first) && !IsConstant(first) && !IsReceiverStore(first))
+            return IntPtr.Zero;
+
+        decoder.Decode(out var ret);
+        return decoder.LastError == DecoderError.None && IsRet(ret) ? code : IntPtr.Zero;
+    }
+
+    private sealed class UnmanagedCodeReader(byte* code, int length) : CodeReader
+    {
+        private int myOffset;
+
+        public override int ReadByte() => myOffset < length ? code[myOffset++] : -1;
+    }
+
+    // MSVC ends an empty function with ret 0
+    private static bool IsRet(in Instruction instruction) =>
+        instruction.Mnemonic == Mnemonic.Ret && (instruction.OpCount == 0 || instruction.Immediate16 == 0);
+
+    // A Harmony detour or any other jmp at the entry fails these, so a patched method keeps the invoke path
+    private static bool IsReceiverLoad(in Instruction instruction)
+    {
+        if (instruction.Mnemonic is not (Mnemonic.Mov or Mnemonic.Movzx or Mnemonic.Movsx or Mnemonic.Movsxd or
+            Mnemonic.Movss or Mnemonic.Movsd or Mnemonic.Movq or Mnemonic.Movd))
+            return false;
+
+        if (instruction.OpCount != 2 || instruction.Op0Kind != OpKind.Register || !IsReceiverMemory(instruction, 1))
+            return false;
+
+        var destination = instruction.Op0Register;
+        return destination == Register.XMM0 || destination.GetFullRegister() == Register.RAX;
+    }
+
+    private static bool IsReceiverStore(in Instruction instruction)
+    {
+        if (instruction.Mnemonic is not (Mnemonic.Mov or Mnemonic.Movss or Mnemonic.Movsd or Mnemonic.Movq or Mnemonic.Movd))
+            return false;
+
+        if (instruction.OpCount != 2 || !IsReceiverMemory(instruction, 0) || instruction.Op1Kind != OpKind.Register)
+            return false;
+
+        var source = instruction.Op1Register;
+        return source == Register.XMM1 || source.GetFullRegister() == Register.RDX;
+    }
+
+    private static bool IsReceiverMemory(in Instruction instruction, int operand) =>
+        instruction.GetOpKind(operand) == OpKind.Memory && instruction.MemoryBase == Register.RCX &&
+        instruction.MemoryIndex == Register.None && instruction.SegmentPrefix == Register.None;
+
+    // Constants come as an immediate, a register zeroing itself, or a read from the image's constant data
+    private static bool IsConstant(in Instruction instruction)
+    {
+        if (instruction.OpCount != 2 || instruction.Op0Kind != OpKind.Register)
+            return false;
+
+        var destination = instruction.Op0Register;
+        if (destination.GetFullRegister() == Register.RAX)
+            return instruction.Mnemonic == Mnemonic.Mov && instruction.Op1Kind is OpKind.Immediate8 or OpKind.Immediate32 or OpKind.Immediate64 or OpKind.Immediate32to64 ||
+                   instruction.Mnemonic == Mnemonic.Xor && instruction.Op1Kind == OpKind.Register && instruction.Op1Register == destination;
+
+        if (destination != Register.XMM0)
+            return false;
+        return instruction.Mnemonic is Mnemonic.Xorps or Mnemonic.Xorpd && instruction.Op1Kind == OpKind.Register && instruction.Op1Register == Register.XMM0 ||
+               instruction.Mnemonic is Mnemonic.Movss or Mnemonic.Movsd && instruction.Op1Kind == OpKind.Memory && instruction.IsIPRelativeMemoryOperand;
     }
 
     // A null wrapper passed for a struct parameter stands for the struct's default. il2cpp_object_new hands back a zeroed box.

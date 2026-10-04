@@ -18,6 +18,11 @@ public class Il2CppStructArray<T> : Il2CppArrayBase<T> where T : unmanaged
     {
     }
 
+    // IntPtr is nint since C# 11, so without this an int size binds the pointer constructor
+    public Il2CppStructArray(int size) : base(AllocateArray(size))
+    {
+    }
+
     public Il2CppStructArray(T[] arr) : base(AllocateArray(arr.Length))
     {
         arr.CopyTo(this);
@@ -32,6 +37,11 @@ public class Il2CppStructArray<T> : Il2CppArrayBase<T> where T : unmanaged
     public unsafe Span<T> AsSpan()
     {
         return new Span<T>(ArrayStartPointer.ToPointer(), Length);
+    }
+
+    private protected override void CopyToSpan(Span<T> destination)
+    {
+        AsSpan().CopyTo(destination);
     }
 
     [return: NotNullIfNotNull(nameof(arr))]

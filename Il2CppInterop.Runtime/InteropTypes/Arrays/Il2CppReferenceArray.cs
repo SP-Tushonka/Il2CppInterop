@@ -33,6 +33,11 @@ public class Il2CppReferenceArray<T> : Il2CppArrayBase<T> where T : class?
     {
     }
 
+    // IntPtr is nint since C# 11, so without this an int size binds the pointer constructor
+    public Il2CppReferenceArray(int size) : base(AllocateArray(size))
+    {
+    }
+
     public Il2CppReferenceArray(T[] arr) : base(AllocateArray(arr.Length))
     {
         for (var i = 0; i < arr.Length; i++)

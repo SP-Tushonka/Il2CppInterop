@@ -18,6 +18,11 @@ public class Il2CppStringArray : Il2CppArrayBase<string>
     {
     }
 
+    // IntPtr is nint since C# 11, so without this an int size binds the pointer constructor
+    public Il2CppStringArray(int size) : base(AllocateArray(size))
+    {
+    }
+
     public Il2CppStringArray(string?[] arr) : base(AllocateArray(arr.Length))
     {
         for (var i = 0; i < arr.Length; i++)

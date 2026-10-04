@@ -68,8 +68,15 @@ public abstract class Il2CppArrayBase<T> : Il2CppArrayBase, IList<T>, IReadOnlyL
             throw new ArgumentException(
                 $"Not enough space in target array: need {Length} slots, have {array.Length - arrayIndex}");
 
-        for (var i = 0; i < Length; i++)
-            array[i + arrayIndex] = this[i];
+        CopyToSpan(array.AsSpan(arrayIndex));
+    }
+
+    // Struct arrays copy their memory in one go, the others wrap element by element
+    private protected virtual void CopyToSpan(Span<T> destination)
+    {
+        var length = Length;
+        for (var i = 0; i < length; i++)
+            destination[i] = this[i];
     }
 
     bool ICollection<T>.Remove(T item)
@@ -83,8 +90,11 @@ public abstract class Il2CppArrayBase<T> : Il2CppArrayBase, IList<T>, IReadOnlyL
 
     public int IndexOf(T item)
     {
-        for (var i = 0; i < Length; i++)
-            if (Equals(item, this[i]))
+        // object.Equals boxed both sides of every struct comparison
+        var comparer = EqualityComparer<T>.Default;
+        var length = Length;
+        for (var i = 0; i < length; i++)
+            if (comparer.Equals(item, this[i]))
                 return i;
 
         return -1;
@@ -124,9 +134,7 @@ public abstract class Il2CppArrayBase<T> : Il2CppArrayBase, IList<T>, IReadOnlyL
             return null;
 
         var arr = new T[il2CppArray.Length];
-        for (var i = 0; i < arr.Length; i++)
-            arr[i] = il2CppArray[i];
-
+        il2CppArray.CopyToSpan(arr);
         return arr;
     }
 

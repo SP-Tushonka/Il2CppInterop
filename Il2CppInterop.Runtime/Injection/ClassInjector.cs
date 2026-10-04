@@ -1537,6 +1537,11 @@ public static unsafe partial class ClassInjector
                 {
                     body.Emit(OpCodes.Call, typeof(Il2CppObjectPool).GetMethod(nameof(Il2CppObjectPool.Get))!.MakeGenericMethod(type));
                 }
+                else if (type.IsSubclassOf(typeof(ValueType)))
+                {
+                    // Struct values arrive in a box made above for this call alone
+                    body.Emit(OpCodes.Call, typeof(Il2CppObjectBase).GetMethod(nameof(Il2CppObjectBase.WrapValueBox))!.MakeGenericMethod(type));
+                }
                 else if (type.IsSubclassOf(typeof(Il2CppObjectBase)) && !type.IsSubclassOf(typeof(Il2CppArrayBase)))
                 {
                     // The pool hands back the managed object of an injected class, a fresh wrapper would lose the subclass

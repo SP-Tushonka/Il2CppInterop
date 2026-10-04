@@ -1,5 +1,7 @@
 ﻿using System;
+using System.Collections.Concurrent;
 using System.Linq;
+using System.Linq.Expressions;
 using System.Runtime.CompilerServices;
 using Il2CppInterop.Common.Attributes;
 using Il2CppInterop.Runtime.Attributes;
@@ -10,14 +12,22 @@ namespace Il2CppInterop.Runtime;
 
 public static class Il2CppClassPointerStore
 {
+    // A compiled read of the field rather than its value, because injection fills the pointer in after the first ask
+    private static readonly ConcurrentDictionary<Type, Func<IntPtr>> ourPointerReaders = new();
+
     public static IntPtr GetNativeClassPointer(Type type)
     {
         if (type == typeof(void)) return Il2CppClassPointerStore<Void>.NativeClassPtr;
         if (type == typeof(String)) return Il2CppClassPointerStore<string>.NativeClassPtr;
-        return (IntPtr)typeof(Il2CppClassPointerStore<>)
+        return ourPointerReaders.GetOrAdd(type, static key => CreatePointerReader(key))();
+    }
+
+    private static Func<IntPtr> CreatePointerReader(Type type)
+    {
+        var field = typeof(Il2CppClassPointerStore<>)
             .MakeGenericType(type)
-            .GetField(nameof(Il2CppClassPointerStore<int>.NativeClassPtr))
-            .GetValue(null);
+            .GetField(nameof(Il2CppClassPointerStore<int>.NativeClassPtr))!;
+        return Expression.Lambda<Func<IntPtr>>(Expression.Field(null, field)).Compile();
     }
 
     internal static void SetNativeClassPointer(Type type, IntPtr value)

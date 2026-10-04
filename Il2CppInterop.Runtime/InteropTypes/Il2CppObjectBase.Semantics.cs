@@ -15,13 +15,20 @@ public partial class Il2CppObjectBase
 
     private static readonly ConcurrentDictionary<IntPtr, ClassSemantics> ourClassSemantics = new();
 
+    // Set on first use, so equality and hashing after that read a field instead of a dictionary
+    private ClassSemantics? mySemantics;
+
+    // An override resolves to the same method for every object of a class, and so does whether this gets unboxed
     private sealed class ClassSemantics
     {
         public bool Injected;
-        public bool EqualsOverridden;
-        public bool GetHashCodeOverridden;
+        public IntPtr EqualsOverride;
+        public bool EqualsUnboxesThis;
+        public IntPtr GetHashCodeOverride;
+        public bool GetHashCodeUnboxesThis;
     }
 
+    // The handle is strong, so a live wrapper's object cannot have been collected and neither method checks
     public override bool Equals(object? obj)
     {
         if (ReferenceEquals(this, obj))
@@ -30,19 +37,16 @@ public partial class Il2CppObjectBase
             return false;
         if (myPointer == other.myPointer)
             return true;
-        if (WasCollected || other.WasCollected)
-            return false;
 
         var semantics = SemanticsOf(this);
-        if (semantics.Injected || !semantics.EqualsOverridden)
+        if (semantics.Injected || semantics.EqualsOverride == IntPtr.Zero)
             return false;
 
-        var method = IL2CPP.il2cpp_object_get_virtual_method(myPointer, ourObjectEquals);
         unsafe
         {
             var args = stackalloc IntPtr[1];
             args[0] = other.myPointer;
-            var result = Invoke(method, (void**)args);
+            var result = Invoke(semantics.EqualsOverride, semantics.EqualsUnboxesThis, (void**)args);
             return result != IntPtr.Zero && *(bool*)IL2CPP.il2cpp_object_unbox(result);
         }
     }
@@ -64,17 +68,13 @@ public partial class Il2CppObjectBase
 
     public override int GetHashCode()
     {
-        if (WasCollected)
-            return myPointer.GetHashCode();
-
         var semantics = SemanticsOf(this);
-        if (semantics.Injected || !semantics.GetHashCodeOverridden)
+        if (semantics.Injected || semantics.GetHashCodeOverride == IntPtr.Zero)
             return myPointer.GetHashCode();
 
-        var method = IL2CPP.il2cpp_object_get_virtual_method(myPointer, ourObjectGetHashCode);
         unsafe
         {
-            var result = Invoke(method, null);
+            var result = Invoke(semantics.GetHashCodeOverride, semantics.GetHashCodeUnboxesThis, null);
             return result == IntPtr.Zero ? myPointer.GetHashCode() : *(int*)IL2CPP.il2cpp_object_unbox(result);
         }
     }
@@ -93,7 +93,7 @@ public partial class Il2CppObjectBase
             var method = IL2CPP.il2cpp_object_get_virtual_method(myPointer, ourObjectToString);
             unsafe
             {
-                var result = Invoke(method, null);
+                var result = Invoke(method, MethodUnboxesThis(method), null);
                 return result == IntPtr.Zero ? "" : IL2CPP.Il2CppStringToManaged(result)!;
             }
         }
@@ -104,25 +104,43 @@ public partial class Il2CppObjectBase
     }
 
     // this is unboxed when the resolved method belongs to a value type, il2cpp_runtime_invoke passes it through as is
-    private unsafe IntPtr Invoke(IntPtr method, void** args)
+    private unsafe IntPtr Invoke(IntPtr method, bool unboxThis, void** args)
     {
-        var self = IL2CPP.il2cpp_class_is_valuetype(IL2CPP.il2cpp_method_get_class(method)) ? IL2CPP.il2cpp_object_unbox(myPointer) : myPointer;
+        var self = unboxThis ? IL2CPP.il2cpp_object_unbox(myPointer) : myPointer;
         var exception = IntPtr.Zero;
         var result = IL2CPP.il2cpp_runtime_invoke(method, self, args, ref exception);
         Il2CppException.RaiseExceptionIfNecessary(exception);
         return result;
     }
 
+    private static bool MethodUnboxesThis(IntPtr method)
+    {
+        return IL2CPP.il2cpp_class_is_valuetype(IL2CPP.il2cpp_method_get_class(method));
+    }
+
     // An injected object's own overrides already run, and its il2cpp slots would only call back into them
     private static ClassSemantics SemanticsOf(Il2CppObjectBase instance)
     {
+        var semantics = instance.mySemantics;
+        if (semantics != null)
+            return semantics;
+
         ResolveObjectMethods();
-        return ourClassSemantics.GetOrAdd(instance.ObjectClass, static (klass, pointer) => new ClassSemantics
+        semantics = ourClassSemantics.GetOrAdd(instance.ObjectClass, static (klass, pointer) =>
         {
-            Injected = RuntimeSpecificsStore.IsInjected(klass),
-            EqualsOverridden = IL2CPP.il2cpp_object_get_virtual_method(pointer, ourObjectEquals) != ourObjectEquals,
-            GetHashCodeOverridden = IL2CPP.il2cpp_object_get_virtual_method(pointer, ourObjectGetHashCode) != ourObjectGetHashCode,
+            var equals = IL2CPP.il2cpp_object_get_virtual_method(pointer, ourObjectEquals);
+            var getHashCode = IL2CPP.il2cpp_object_get_virtual_method(pointer, ourObjectGetHashCode);
+            return new ClassSemantics
+            {
+                Injected = RuntimeSpecificsStore.IsInjected(klass),
+                EqualsOverride = equals != ourObjectEquals ? equals : IntPtr.Zero,
+                EqualsUnboxesThis = equals != ourObjectEquals && MethodUnboxesThis(equals),
+                GetHashCodeOverride = getHashCode != ourObjectGetHashCode ? getHashCode : IntPtr.Zero,
+                GetHashCodeUnboxesThis = getHashCode != ourObjectGetHashCode && MethodUnboxesThis(getHashCode),
+            };
         }, instance.myPointer);
+        instance.mySemantics = semantics;
+        return semantics;
     }
 
     private static void ResolveObjectMethods()

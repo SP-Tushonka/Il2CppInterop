@@ -116,15 +116,15 @@ public static class ILGeneratorEx
         if (resolvedMethod != null)
         {
             body.Add(OpCodes.Ldloc, resolvedMethod);
-            body.Add(OpCodes.Call, imports.IL2CPP_il2cpp_method_get_class.Value);
+            body.Add(OpCodes.Call, imports.IL2CPP_MethodBelongsToValueType.Value);
         }
         else
         {
             body.Add(OpCodes.Dup);
             body.Add(OpCodes.Call, imports.IL2CPP_il2cpp_object_get_class.Value);
+            body.Add(OpCodes.Call, imports.IL2CPP_ClassIsValueType.Value);
         }
 
-        body.Add(OpCodes.Call, imports.IL2CPP_il2cpp_class_is_valuetype.Value);
         body.Add(OpCodes.Brfalse_S, referenceType);
         body.Add(OpCodes.Call, imports.IL2CPP_il2cpp_object_unbox.Value);
         referenceType.Instruction = body.Add(OpCodes.Nop);

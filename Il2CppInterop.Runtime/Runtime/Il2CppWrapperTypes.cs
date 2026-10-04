@@ -86,7 +86,16 @@ internal static class Il2CppWrapperTypes
         }
     }
 
+    // Every class seen for the first time asks for two names, and a scan of all loaded assemblies or a failed load
+    // per class showed up as hitches
+    private static readonly ConcurrentDictionary<string, Assembly?> ourAssemblies = new();
+
     private static Assembly? FindAssembly(string name)
+    {
+        return ourAssemblies.GetOrAdd(name, static n => LoadAssembly(n));
+    }
+
+    private static Assembly? LoadAssembly(string name)
     {
         var loaded = AppDomain.CurrentDomain.GetAssemblies().FirstOrDefault(a => a.GetName().Name == name);
         if (loaded != null)

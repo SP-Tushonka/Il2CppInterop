@@ -116,6 +116,15 @@ public partial class Il2CppObjectBase : IIl2CppObjectBase
         return UnboxUnsafe<T>(Pointer);
     }
 
+    /// <summary>
+    /// Wraps a box that was just made for one struct value. Nothing else can hold that box, so a pool lookup would
+    /// always miss and leave a dead entry behind.
+    /// </summary>
+    public static T WrapValueBox<T>(IntPtr box)
+    {
+        return box == IntPtr.Zero ? default! : InitializerStore<T>.Initializer(box);
+    }
+
     private static readonly Type[] _intPtrTypeArray = { typeof(IntPtr) };
     private static readonly MethodInfo _getUninitializedObject = typeof(RuntimeHelpers).GetMethod(nameof(RuntimeHelpers.GetUninitializedObject))!;
     private static readonly MethodInfo _getTypeFromHandle = typeof(Type).GetMethod(nameof(Type.GetTypeFromHandle))!;

@@ -528,7 +528,10 @@ internal unsafe class Il2CppDetourMethodPatcher : MethodPatcher
             il.Emit(OpCodes.Br_S, endLabel);
 
             il.MarkLabel(notNullLabel);
-            il.Emit(OpCodes.Call, AccessTools.Method(typeof(Il2CppObjectPool), nameof(Il2CppObjectPool.Get)).MakeGenericMethod(originalType));
+            // A struct argument sits in a box made above for this call alone, which a pool lookup would only miss
+            il.Emit(OpCodes.Call, originalType.IsSubclassOf(typeof(ValueType))
+                ? AccessTools.Method(typeof(Il2CppObjectBase), nameof(Il2CppObjectBase.WrapValueBox)).MakeGenericMethod(originalType)
+                : AccessTools.Method(typeof(Il2CppObjectPool), nameof(Il2CppObjectPool.Get)).MakeGenericMethod(originalType));
 
             il.MarkLabel(endLabel);
         }

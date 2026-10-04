@@ -76,16 +76,25 @@ public static unsafe partial class IL2CPP
         return field;
     }
 
+    // A wrapper's static constructor looks up every method of its class, which a scan per lookup made quadratic
+    private static readonly ConcurrentDictionary<IntPtr, Dictionary<int, IntPtr>> ourMethodsByToken = new();
+
     public static IntPtr GetIl2CppMethodByToken(IntPtr clazz, int token)
     {
         if (clazz == IntPtr.Zero)
             return NativeStructUtils.GetMethodInfoForMissingMethod(token.ToString());
 
-        var iter = IntPtr.Zero;
-        IntPtr method;
-        while ((method = il2cpp_class_get_methods(clazz, ref iter)) != IntPtr.Zero)
-            if (il2cpp_method_get_token(method) == token)
-                return method;
+        var methods = ourMethodsByToken.GetOrAdd(clazz, static klass =>
+        {
+            var byToken = new Dictionary<int, IntPtr>();
+            var iter = IntPtr.Zero;
+            IntPtr method;
+            while ((method = il2cpp_class_get_methods(klass, ref iter)) != IntPtr.Zero)
+                byToken.TryAdd((int)il2cpp_method_get_token(method), method);
+            return byToken;
+        });
+        if (methods.TryGetValue(token, out var found))
+            return found;
 
         var className = il2cpp_class_get_name_(clazz);
         Logger.Instance.LogTrace("Unable to find method {ClassName}::{Token}", className, token);
@@ -463,32 +472,72 @@ public static unsafe partial class IL2CPP
         return CreateNullableBox(nullableClass, boxed == IntPtr.Zero ? IntPtr.Zero : boxed + IntPtr.Size * 2);
     }
 
+    // Interface calls ask these of every resolved method, and the answer for a method or class never changes
+    private static readonly ConcurrentDictionary<IntPtr, bool> ourValueTypeMethods = new();
+    private static readonly ConcurrentDictionary<IntPtr, bool> ourValueTypeClasses = new();
+
+    public static bool MethodBelongsToValueType(IntPtr method)
+    {
+        if (ourValueTypeMethods.TryGetValue(method, out var isValueType))
+            return isValueType;
+        return ourValueTypeMethods[method] = il2cpp_class_is_valuetype(il2cpp_method_get_class(method));
+    }
+
+    public static bool ClassIsValueType(IntPtr klass)
+    {
+        if (ourValueTypeClasses.TryGetValue(klass, out var isValueType))
+            return isValueType;
+        return ourValueTypeClasses[klass] = il2cpp_class_is_valuetype(klass);
+    }
+
     internal static bool IsIl2CppNullable(Type type)
     {
         return type.IsGenericType && type.GetGenericTypeDefinition().FullName == "Il2CppSystem.Nullable`1";
     }
 
+    // What a generic argument is never changes, so it is worked out once instead of on every generic return
+    private static class GenericArgument<T>
+    {
+        public static readonly bool IsNullable = IsIl2CppNullable(typeof(T));
+
+        private static int ourClassIsValueType;
+
+        public static bool ClassIsValueType
+        {
+            get
+            {
+                if (ourClassIsValueType == 0)
+                    ourClassIsValueType = il2cpp_class_is_valuetype(Il2CppClassPointerStore<T>.NativeClassPtr) ? 1 : 2;
+                return ourClassIsValueType == 1;
+            }
+        }
+    }
+
     public static T? PointerToValueGeneric<T>(IntPtr objectPointer, bool isFieldPointer, bool valueTypeWouldBeBoxed)
     {
-        if (IsIl2CppNullable(typeof(T)))
+        if (GenericArgument<T>.IsNullable)
         {
             var nullableClass = Il2CppClassPointerStore<T>.NativeClassPtr;
             objectPointer = isFieldPointer || !valueTypeWouldBeBoxed
                 ? BoxNullable(nullableClass, objectPointer)
                 : RebuildNullableBox(nullableClass, objectPointer);
-            return Il2CppObjectPool.Get<T>(objectPointer);
+            return objectPointer == IntPtr.Zero ? default : Il2CppObjectBase.WrapValueBox<T>(objectPointer);
         }
+
+        // A field or out storage holds a blittable value as is, so it is read without boxing it only to unbox it again
+        if (typeof(T).IsValueType && (isFieldPointer || !valueTypeWouldBeBoxed))
+            return Unsafe.Read<T>((void*)objectPointer);
 
         // At most one of these two boxes a value type: il2cpp_value_box copies from the address it is
         // given, so boxing a pointer that is already a box would copy that box's header, not the value.
         if (isFieldPointer)
         {
-            if (il2cpp_class_is_valuetype(Il2CppClassPointerStore<T>.NativeClassPtr))
+            if (GenericArgument<T>.ClassIsValueType)
                 objectPointer = il2cpp_value_box(Il2CppClassPointerStore<T>.NativeClassPtr, objectPointer);
             else
                 objectPointer = *(IntPtr*)objectPointer;
         }
-        else if (!valueTypeWouldBeBoxed && il2cpp_class_is_valuetype(Il2CppClassPointerStore<T>.NativeClassPtr))
+        else if (!valueTypeWouldBeBoxed && GenericArgument<T>.ClassIsValueType)
         {
             objectPointer = il2cpp_value_box(Il2CppClassPointerStore<T>.NativeClassPtr, objectPointer);
         }
@@ -501,6 +550,10 @@ public static unsafe partial class IL2CPP
 
         if (typeof(T).IsValueType)
             return Il2CppObjectBase.UnboxUnsafe<T>(objectPointer);
+
+        // A struct wrapper's box was made by the invoke or the box above for this one value
+        if (GenericArgument<T>.ClassIsValueType)
+            return Il2CppObjectBase.WrapValueBox<T>(objectPointer);
 
         return Il2CppObjectPool.Get<T>(objectPointer);
     }

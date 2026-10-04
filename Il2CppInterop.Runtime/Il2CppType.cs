@@ -1,3 +1,4 @@
+using System.Collections.Concurrent;
 using Il2CppInterop.Runtime.Runtime;
 using Il2CppSystem;
 using ArgumentException = System.ArgumentException;
@@ -7,6 +8,9 @@ namespace Il2CppInterop.Runtime;
 
 public static class Il2CppType
 {
+    // il2cpp keeps one Type object per class, and asking for it is a runtime_invoke and a pool lookup
+    private static readonly ConcurrentDictionary<IntPtr, Type> ourTypeObjects = new();
+
     public static Type TypeFromPointer(IntPtr classPointer, string typeName = "<unknown type>")
     {
         return TypeFromPointerInternal(classPointer, typeName, true);
@@ -21,6 +25,9 @@ public static class Il2CppType
             return null;
         }
 
+        if (ourTypeObjects.TryGetValue(classPointer, out var cached))
+            return cached;
+
         var il2CppType = IL2CPP.il2cpp_class_get_type(classPointer);
         if (il2CppType == IntPtr.Zero)
         {
@@ -29,7 +36,10 @@ public static class Il2CppType
             return null;
         }
 
-        return Type.internal_from_handle(il2CppType);
+        var type = Type.internal_from_handle(il2CppType);
+        if (type != null)
+            ourTypeObjects[classPointer] = type;
+        return type;
     }
 
     public static Type From(System.Type type)

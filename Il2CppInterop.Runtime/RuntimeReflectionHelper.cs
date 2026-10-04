@@ -17,6 +17,11 @@ public static class RuntimeReflectionHelper
 
     public static RuntimeTypeHandle GetRuntimeTypeHandle<T>()
     {
-        return Il2CppType.Of<T>().TypeHandle;
+        return TypeHandles<T>.Handle;
+    }
+
+    private static class TypeHandles<T>
+    {
+        public static readonly RuntimeTypeHandle Handle = Il2CppType.Of<T>().TypeHandle;
     }
 }

@@ -782,18 +782,49 @@ public static class UnstripTranslator
         }
         else
         {
-            // The cached offset is private to the declaring type, so another type looks it up by name
+            // The cached offset is private to the declaring type, so another type looks it up by name once and keeps
+            // it in a field of its own. Zero is never an instance field offset since the object header comes first.
+            var owner = target.DeclaringType!;
+            var cache = owner.GenericParameters.Count == 0 ? GetOffsetCache(owner, declarer, field, module) : null;
+            var cached = new CilInstructionLabel();
+            if (cache != null)
+            {
+                instructions.Add(OpCodes.Ldsfld, cache);
+                instructions.Add(OpCodes.Dup);
+                instructions.Add(OpCodes.Brtrue_S, cached);
+                instructions.Add(OpCodes.Pop);
+            }
+
             var store = new GenericInstanceTypeSignature(imports.Il2CppClassPointerStore.ToTypeDefOrRef(), imports.Il2CppClassPointerStore.IsValueType(), [declarer]);
             instructions.Add(OpCodes.Ldsfld, module.DefaultImporter.ImportField(
                 ReferenceCreator.CreateFieldReference("NativeClassPtr", module.IntPtr(), store.ToTypeDefOrRef())));
             instructions.Add(OpCodes.Ldstr, field.Name!.Value);
             instructions.Add(OpCodes.Call, imports.IL2CPP_GetIl2CppField.Value);
             instructions.Add(OpCodes.Call, imports.IL2CPP_il2cpp_field_get_offset.Value);
+
+            if (cache != null)
+            {
+                instructions.Add(OpCodes.Dup);
+                instructions.Add(OpCodes.Stsfld, cache);
+                cached.Instruction = instructions.Add(OpCodes.Nop);
+            }
         }
 
         instructions.Add(OpCodes.Conv_U);
         instructions.Add(OpCodes.Add);
         return first;
+    }
+
+    private static FieldDefinition GetOffsetCache(TypeDefinition owner, TypeSignature declarer, IFieldDescriptor field, ModuleDefinition module)
+    {
+        var name = $"ForeignFieldOffset_{declarer.FullName}_{field.Name}";
+        var cache = owner.Fields.FirstOrDefault(it => it.Name == name);
+        if (cache != null)
+            return cache;
+
+        cache = new FieldDefinition(name, FieldAttributes.Private | FieldAttributes.Static, module.UInt());
+        owner.Fields.Add(cache);
+        return cache;
     }
 
     private static bool HasIl2CppClass(TypeDefinition type, RewriteGlobalContext globalContext)

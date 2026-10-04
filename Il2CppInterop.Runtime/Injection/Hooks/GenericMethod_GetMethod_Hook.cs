@@ -36,9 +36,8 @@ namespace Il2CppInterop.Runtime.Injection.Hooks
                 Logger.Instance.LogTrace("Inflated method: {InflatedMethod}", inflatedMethod.Name);
                 inflatedMethodPointer = (IntPtr)ClassInjector.ConvertMethodInfo(inflatedMethod,
                     UnityVersionHandler.Wrap(UnityVersionHandler.Wrap(gmethod->methodDefinition).Class));
-                methods.Item2.Add((IntPtr)instancePointer, inflatedMethodPointer);
-
-                return (Il2CppMethodInfo*)inflatedMethodPointer;
+                // Two threads can inflate the same instance, every caller has to get the one that was cached
+                return (Il2CppMethodInfo*)methods.Item2.GetOrAdd((IntPtr)instancePointer, inflatedMethodPointer);
             }
 
             return Original(gmethod, copyMethodPtr);

@@ -12,7 +12,7 @@ namespace Il2CppInterop.HarmonySupport;
 // every method sharing it, with their own arguments and callers expecting their own results.
 internal static unsafe class SharedBodyCheck
 {
-    private static readonly object Lock = new();
+    private static readonly Lock Lock = new();
     private static Dictionary<IntPtr, int> _bodyCounts;
 
     public static void Report(MethodBase original, IntPtr methodPointer)

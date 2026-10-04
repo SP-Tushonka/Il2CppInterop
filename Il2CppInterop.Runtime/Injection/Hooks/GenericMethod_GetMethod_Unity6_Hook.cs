@@ -71,10 +71,8 @@ namespace Il2CppInterop.Runtime.Injection.Hooks
                     inflatedMethodPointer = (IntPtr)ClassInjector.ConvertMethodInfo(
                         inflatedMethod, UnityVersionHandler.Wrap(wrappedMethod.Class));
 
-                    // Cache the result to prevent recalculating next time
-                    methods.Item2.Add((IntPtr)methodInst, inflatedMethodPointer);
-
-                    return (Il2CppMethodInfo*)inflatedMethodPointer;
+                    // Two threads can inflate the same instance, every caller has to get the one that was cached
+                    return (Il2CppMethodInfo*)methods.Item2.GetOrAdd((IntPtr)methodInst, inflatedMethodPointer);
                 }
             }
             catch (Exception ex)

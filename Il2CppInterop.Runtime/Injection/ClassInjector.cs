@@ -71,7 +71,7 @@ public static unsafe partial class ClassInjector
     private static readonly HashSet<string> InjectedTypes = new();
 
     /// <summary> (method) : (method_inst, method) </summary>
-    internal static readonly Dictionary<IntPtr, (MethodInfo, Dictionary<IntPtr, IntPtr>)>
+    internal static readonly ConcurrentDictionary<IntPtr, (MethodInfo, ConcurrentDictionary<IntPtr, IntPtr>)>
         InflatedMethodFromContextDictionary = new();
 
     private static readonly ConcurrentDictionary<string, Delegate> InvokerCache = new();
@@ -364,7 +364,7 @@ public static unsafe partial class ClassInjector
             var methodInfo = eligibleMethods[i];
             var methodInfoPointer = methodPointerArray[i + methodsOffset] = ConvertMethodInfo(methodInfo, classPointer);
             if (methodInfo.IsGenericMethod && !methodInfo.IsAbstract)
-                InflatedMethodFromContextDictionary.Add((IntPtr)methodInfoPointer, (methodInfo, new Dictionary<IntPtr, IntPtr>()));
+                InflatedMethodFromContextDictionary.TryAdd((IntPtr)methodInfoPointer, (methodInfo, new ConcurrentDictionary<IntPtr, IntPtr>()));
             infos[(methodInfo.Name, methodInfo.GetParameters().Length, methodInfo.IsGenericMethod)] = i + methodsOffset;
         }
 

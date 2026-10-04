@@ -105,7 +105,8 @@ namespace Il2CppInterop.Runtime.Injection
 
             foreach (IntPtr image in (attribute is null) ? IL2CPP.GetIl2CppImages() : attribute.GetImagePointers())
             {
-                s_ClassNameLookup.Add((namespaze, klass, image), typePointer);
+                if (!s_ClassNameLookup.TryAdd((namespaze, klass, image), typePointer))
+                    throw new ArgumentException($"A class named {namespaze}.{klass} is already injected");
             }
         }
 
@@ -146,7 +147,8 @@ namespace Il2CppInterop.Runtime.Injection
         internal static readonly ConcurrentDictionary<long, IntPtr> s_InjectedClasses = new();
         internal static readonly ConcurrentDictionary<int, IntPtr> s_InjectedIndices = new();
         /// <summary> (namespace, class, image) : class </summary>
-        internal static readonly Dictionary<(string _namespace, string _class, IntPtr imagePtr), IntPtr> s_ClassNameLookup = new();
+        // Read by the Class::FromName hook on whatever thread il2cpp resolves a name, while injection writes it
+        internal static readonly ConcurrentDictionary<(string _namespace, string _class, IntPtr imagePtr), IntPtr> s_ClassNameLookup = new();
 
         #region Class::Init
         [UnmanagedFunctionPointer(CallingConvention.Cdecl)]

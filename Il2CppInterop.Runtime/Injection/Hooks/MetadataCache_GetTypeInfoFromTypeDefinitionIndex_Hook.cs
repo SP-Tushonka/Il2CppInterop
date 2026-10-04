@@ -1,6 +1,7 @@
 ﻿using System;
 using System.Linq;
 using System.Runtime.InteropServices;
+using System.Threading;
 using Il2CppInterop.Common;
 using Il2CppInterop.Common.XrefScans;
 using Il2CppInterop.Runtime.Runtime;
@@ -28,7 +29,7 @@ namespace Il2CppInterop.Runtime.Injection.Hooks
             return Original(index);
         }
 
-        private readonly object _layoutLock = new();
+        private readonly Lock _layoutLock = new();
         private long _typeDefStart;
         private long _typeDefStride;
 

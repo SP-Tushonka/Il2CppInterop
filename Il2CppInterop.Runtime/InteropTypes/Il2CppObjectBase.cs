@@ -102,8 +102,9 @@ public partial class Il2CppObjectBase : IIl2CppObjectBase
         if (nestedTypeClassPointer == IntPtr.Zero)
             throw new ArgumentException($"{typeof(T)} is not an Il2Cpp reference type");
 
+        // A box of exactly T is the usual case and needs no P/Invoke to prove it
         var ownClass = IL2CPP.il2cpp_object_get_class(pointer);
-        if (!IL2CPP.il2cpp_class_is_assignable_from(nestedTypeClassPointer, ownClass))
+        if (ownClass != nestedTypeClassPointer && !IL2CPP.il2cpp_class_is_assignable_from(nestedTypeClassPointer, ownClass))
             throw new InvalidCastException(
                 $"Can't cast object of type {IL2CPP.il2cpp_class_get_name_(ownClass)} to type {typeof(T)}");
 

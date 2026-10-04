@@ -23,9 +23,10 @@ namespace Il2CppInterop.Runtime.Injection.Hooks
         }
 
         [UnmanagedFunctionPointer(CallingConvention.Cdecl)]
-        internal delegate Il2CppClass* MethodDelegate(Il2CppType* type, bool throwOnError);
+        // il2cpp passes a one byte bool, the default marshalling would read four bytes of the register
+        internal delegate Il2CppClass* MethodDelegate(Il2CppType* type, byte throwOnError);
 
-        private Il2CppClass* Hook(Il2CppType* type, bool throwOnError)
+        private Il2CppClass* Hook(Il2CppType* type, byte throwOnError)
         {
             if ((nint)type->data < 0 && (type->type == Il2CppTypeEnum.IL2CPP_TYPE_CLASS || type->type == Il2CppTypeEnum.IL2CPP_TYPE_VALUETYPE))
             {

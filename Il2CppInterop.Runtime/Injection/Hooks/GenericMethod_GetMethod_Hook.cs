@@ -15,9 +15,10 @@ namespace Il2CppInterop.Runtime.Injection.Hooks
         public override MethodDelegate GetDetour() => Hook;
 
         [UnmanagedFunctionPointer(CallingConvention.Cdecl)]
-        internal delegate Il2CppMethodInfo* MethodDelegate(Il2CppGenericMethod* gmethod, bool copyMethodPtr);
+        // il2cpp passes a one byte bool, the default marshalling would read four bytes of the register
+        internal delegate Il2CppMethodInfo* MethodDelegate(Il2CppGenericMethod* gmethod, byte copyMethodPtr);
 
-        private Il2CppMethodInfo* Hook(Il2CppGenericMethod* gmethod, bool copyMethodPtr)
+        private Il2CppMethodInfo* Hook(Il2CppGenericMethod* gmethod, byte copyMethodPtr)
         {
             if (gmethod == null || gmethod->methodDefinition == null)
                 return Original(gmethod, copyMethodPtr);

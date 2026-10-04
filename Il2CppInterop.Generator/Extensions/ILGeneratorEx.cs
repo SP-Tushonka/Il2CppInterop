@@ -240,7 +240,8 @@ public static class ILGeneratorEx
         var imports = enclosingType.AssemblyContext.Imports;
         if (originalType is ByReferenceTypeSignature)
         {
-            if (newType.GetElementType().IsValueType())
+            // A byref to a pointer is a pointer to a pointer on both sides
+            if (newType.GetElementType().IsValueTypeLike())
             {
                 body.AddLoadArgument(argumentIndex);
                 body.Add(OpCodes.Conv_I);
@@ -530,15 +531,11 @@ public static class ILGeneratorEx
                 body.Add(OpCodes.Call,
                     imports.Module.DefaultImporter.ImportMethod(imports.IL2CPP_PointerToValueGeneric.Value.MakeGenericInstanceMethod([newMethodParameter.ParameterType.GetElementType()])));
             }
-            else if (IsInterface(newMethodParameter.ParameterType))
-            {
-                body.Add(OpCodes.Call,
-                    imports.Module.DefaultImporter.ImportMethod(imports.Il2CppObjectPool_Get.Value.MakeGenericInstanceMethod([newMethodParameter.ParameterType.GetElementType()])));
-            }
             else
             {
-                body.Add(OpCodes.Newobj,
-                    ReferenceCreator.CreateInstanceMethodReference(".ctor", imports.Module.Void(), newMethodParameter.ParameterType.GetElementType().ToTypeDefOrRef(), imports.Module.IntPtr()));
+                // The pool reuses a live wrapper and returns the managed object of an injected class
+                body.Add(OpCodes.Call,
+                    imports.Module.DefaultImporter.ImportMethod(imports.Il2CppObjectPool_Get.Value.MakeGenericInstanceMethod([newMethodParameter.ParameterType.GetElementType()])));
             }
             body.Add(OpCodes.Br_S, stnop);
 

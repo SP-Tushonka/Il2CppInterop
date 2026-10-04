@@ -1,11 +1,14 @@
 ﻿using System;
 using System.Collections.Concurrent;
+using System.Collections.Generic;
 using System.Linq;
+using System.Linq.Expressions;
 using System.Reflection;
 using System.Reflection.Emit;
 using System.Runtime.CompilerServices;
 using System.Runtime.InteropServices;
 using System.Text;
+using System.Threading;
 using Il2CppInterop.Common;
 using Il2CppInterop.Runtime.Injection;
 using Il2CppInterop.Runtime.InteropTypes;
@@ -36,6 +39,9 @@ public static class DelegateSupport
     private static readonly ConditionalWeakTable<object, ConcurrentDictionary<(MethodInfo, Type), Il2CppObjectBase>> ConvertedByTarget = new();
     private static readonly ConcurrentDictionary<(MethodInfo, Type), Il2CppObjectBase> ConvertedStatic = new();
 
+    // Equal hashes do not make equal signatures, so the hash alone cannot name the type
+    private static int ourDelegateTypeCount;
+
     internal static Type GetOrCreateDelegateType(MethodSignature signature, MethodInfo managedMethod)
     {
         return ourDelegateTypes.GetOrAdd(signature,
@@ -46,7 +52,8 @@ public static class DelegateSupport
 
     private static Type CreateDelegateType(MethodInfo managedMethodInner, MethodSignature signature)
     {
-        var typeName = "Il2CppToManagedDelegate_" + managedMethodInner.DeclaringType + "_" + signature.GetHashCode() +
+        var typeName = "Il2CppToManagedDelegate_" + managedMethodInner.DeclaringType + "_" + signature.GetHashCode() + "_" +
+                       Interlocked.Increment(ref ourDelegateTypeCount) +
                        (signature.HasThis ? "HasThis" : "") +
                        (signature.HasReturnBuffer ? "ReturnBuffer" : "") +
                        (signature.ConstructedFromNative ? "FromNative" : "");
@@ -251,7 +258,7 @@ public static class DelegateSupport
         if (@delegate == null)
             return null;
 
-        if (@delegate.GetInvocationList().Length == 1)
+        if (@delegate.HasSingleTarget)
         {
             var key = (@delegate.Method, typeof(TIl2Cpp));
             var byMethod = @delegate.Target == null
@@ -269,12 +276,67 @@ public static class DelegateSupport
         return result;
     }
 
+    // What a conversion needs that depends only on the managed and il2cpp delegate types
+    private sealed class ConversionPlan
+    {
+        public IntPtr ClassPointer;
+        public Il2CppSystem.Reflection.MethodInfo NativeInvokeMethod = null!;
+        public IntPtr MethodInfo;
+        public IntPtr MethodPointer;
+    }
+
+    // The checks and il2cpp reflection behind a plan cost several microseconds, so each pair is planned once. Its
+    // native MethodInfo is shared by every conversion where each used to allocate one.
+    private static readonly ConcurrentDictionary<(Type Managed, Type Native), ConversionPlan> ConversionPlans = new();
+
+    // Activator searched for this constructor on every conversion
+    private static class DelegateConstructor<TIl2Cpp>
+    {
+        public static readonly Func<Object, IntPtr, TIl2Cpp> Create = Build();
+
+        private static Func<Object, IntPtr, TIl2Cpp> Build()
+        {
+            var target = Expression.Parameter(typeof(Object));
+            var method = Expression.Parameter(typeof(IntPtr));
+            var constructor = typeof(TIl2Cpp).GetConstructor([typeof(Object), typeof(IntPtr)])!;
+            return Expression.Lambda<Func<Object, IntPtr, TIl2Cpp>>(Expression.New(constructor, target, method), target, method)
+                .Compile();
+        }
+    }
+
     private static TIl2Cpp ConvertDelegateUncached<TIl2Cpp>(Delegate @delegate) where TIl2Cpp : Il2CppObjectBase
     {
-        if (!typeof(Il2CppSystem.Delegate).IsAssignableFrom(typeof(TIl2Cpp)))
-            throw new ArgumentException($"{typeof(TIl2Cpp)} is not a delegate");
+        var plan = ConversionPlans.GetOrAdd((@delegate.GetType(), typeof(TIl2Cpp)),
+            static key => CreateConversionPlan(key.Managed, key.Native));
+        var delegateReference = new Il2CppToMonoDelegateReference(@delegate);
 
-        var managedInvokeMethod = @delegate.GetType().GetMethod("Invoke")!;
+        Il2CppSystem.Delegate converted;
+        if (UnityVersionHandler.MustUseDelegateConstructor)
+            converted = DelegateConstructor<TIl2Cpp>.Create(delegateReference, plan.MethodInfo).Cast<Il2CppSystem.Delegate>();
+        else
+            converted = new Il2CppSystem.Delegate(IL2CPP.il2cpp_object_new(plan.ClassPointer));
+
+        converted.method_ptr = plan.MethodPointer;
+        converted.method_info = plan.NativeInvokeMethod; // todo: is this truly a good hack?
+        converted.method = plan.MethodInfo;
+        converted.m_target = delegateReference;
+
+        if (UnityVersionHandler.MustUseDelegateConstructor)
+        {
+            // U2021.2.0+ hack in case the constructor did the wrong thing anyway
+            converted.invoke_impl = converted.method_ptr;
+            converted.method_code = converted.m_target.Pointer;
+        }
+
+        return converted.Cast<TIl2Cpp>();
+    }
+
+    private static ConversionPlan CreateConversionPlan(Type managedDelegateType, Type il2CppDelegateClrType)
+    {
+        if (!typeof(Il2CppSystem.Delegate).IsAssignableFrom(il2CppDelegateClrType))
+            throw new ArgumentException($"{il2CppDelegateClrType} is not a delegate");
+
+        var managedInvokeMethod = managedDelegateType.GetMethod("Invoke")!;
         if (managedInvokeMethod.ReturnType.IsSubclassOf(typeof(ValueType)))
             throw new ArgumentException(
                 $"Delegate returns {managedInvokeMethod.ReturnType} (non-blittable struct) which is not supported");
@@ -293,9 +355,9 @@ public static class DelegateSupport
                     $"Delegate has parameter of type {parameterType} (register sized struct) which is not supported");
         }
 
-        var classTypePtr = Il2CppClassPointerStore.GetNativeClassPointer(typeof(TIl2Cpp));
+        var classTypePtr = Il2CppClassPointerStore.GetNativeClassPointer(il2CppDelegateClrType);
         if (classTypePtr == IntPtr.Zero)
-            throw new ArgumentException($"Type {typeof(TIl2Cpp)} has uninitialized class pointer");
+            throw new ArgumentException($"Type {il2CppDelegateClrType} has uninitialized class pointer");
 
         if (Il2CppClassPointerStore<Il2CppToMonoDelegateReference>.NativeClassPtr == IntPtr.Zero)
             ClassInjector.RegisterTypeInIl2Cpp<Il2CppToMonoDelegateReference>();
@@ -322,8 +384,7 @@ public static class DelegateSupport
                 continue;
             }
 
-            var classPointerFromManagedType = (IntPtr)typeof(Il2CppClassPointerStore<>).MakeGenericType(managedType)
-                .GetField(nameof(Il2CppClassPointerStore<int>.NativeClassPtr)).GetValue(null);
+            var classPointerFromManagedType = Il2CppClassPointerStore.GetNativeClassPointer(managedType);
 
             var classPointerFromNativeType = IL2CPP.il2cpp_class_from_type(nativeType._impl.value);
 
@@ -345,33 +406,13 @@ public static class DelegateSupport
         methodInfo.Slot = ushort.MaxValue;
         methodInfo.IsMarshalledFromNative = true;
 
-        var delegateReference = new Il2CppToMonoDelegateReference(@delegate, methodInfo.Pointer);
-
-        Il2CppSystem.Delegate converted;
-        if (UnityVersionHandler.MustUseDelegateConstructor)
+        return new ConversionPlan
         {
-            converted = ((TIl2Cpp)Activator.CreateInstance(typeof(TIl2Cpp), delegateReference.Cast<Object>(),
-                methodInfo.Pointer)).Cast<Il2CppSystem.Delegate>();
-        }
-        else
-        {
-            var nativeDelegatePtr = IL2CPP.il2cpp_object_new(classTypePtr);
-            converted = new Il2CppSystem.Delegate(nativeDelegatePtr);
-        }
-
-        converted.method_ptr = methodInfo.MethodPointer;
-        converted.method_info = nativeDelegateInvokeMethod; // todo: is this truly a good hack?
-        converted.method = methodInfo.Pointer;
-        converted.m_target = delegateReference;
-
-        if (UnityVersionHandler.MustUseDelegateConstructor)
-        {
-            // U2021.2.0+ hack in case the constructor did the wrong thing anyway
-            converted.invoke_impl = converted.method_ptr;
-            converted.method_code = converted.m_target.Pointer;
-        }
-
-        return converted.Cast<TIl2Cpp>();
+            ClassPointer = classTypePtr,
+            NativeInvokeMethod = nativeDelegateInvokeMethod,
+            MethodInfo = methodInfo.Pointer,
+            MethodPointer = methodInfo.MethodPointer,
+        };
     }
 
     internal class MethodSignature : IEquatable<MethodSignature>
@@ -381,21 +422,22 @@ public static class DelegateSupport
         public readonly bool HasReturnBuffer;
         private readonly int _hashCode;
 
+        // The return type, the declaring type when there is a this, then every parameter type. il2cpp types are
+        // kept as their class pointers, which are unique per type.
+        private readonly object[] _types;
+
         public MethodSignature(Il2CppSystem.Reflection.MethodInfo methodInfo, bool hasThis)
         {
             HasThis = hasThis;
             ConstructedFromNative = true;
 
-            var hashCode = new HashCode();
-
-            hashCode.Add(methodInfo.ReturnType.GetHashCode());
-            if (hasThis) hashCode.Add(methodInfo.DeclaringType.GetHashCode());
+            List<object> types = [methodInfo.ReturnType.Pointer];
+            if (hasThis) types.Add(methodInfo.DeclaringType.Pointer);
             foreach (var parameterInfo in methodInfo.GetParameters())
-            {
-                hashCode.Add(parameterInfo.ParameterType.GetHashCode());
-            }
+                types.Add(parameterInfo.ParameterType.Pointer);
 
-            _hashCode = hashCode.ToHashCode();
+            _types = types.ToArray();
+            _hashCode = HashTypes(_types, false);
         }
 
         public MethodSignature(MethodInfo methodInfo, bool hasThis)
@@ -404,17 +446,22 @@ public static class DelegateSupport
             ConstructedFromNative = false;
             HasReturnBuffer = TrampolineHelpers.NeedsReturnBuffer(methodInfo.ReturnType);
 
-            var hashCode = new HashCode();
-
-            hashCode.Add(methodInfo.ReturnType.NativeType());
-            hashCode.Add(HasReturnBuffer);
-            if (hasThis) hashCode.Add(methodInfo.DeclaringType.NativeType());
+            List<object> types = [methodInfo.ReturnType.NativeType()];
+            if (hasThis) types.Add(methodInfo.DeclaringType.NativeType());
             foreach (var parameterInfo in methodInfo.GetParameters())
-            {
-                hashCode.Add(parameterInfo.ParameterType.NativeType());
-            }
+                types.Add(parameterInfo.ParameterType.NativeType());
 
-            _hashCode = hashCode.ToHashCode();
+            _types = types.ToArray();
+            _hashCode = HashTypes(_types, HasReturnBuffer);
+        }
+
+        private static int HashTypes(object[] types, bool hasReturnBuffer)
+        {
+            var hashCode = new HashCode();
+            hashCode.Add(hasReturnBuffer);
+            foreach (var type in types)
+                hashCode.Add(type);
+            return hashCode.ToHashCode();
         }
 
         public override int GetHashCode()
@@ -426,7 +473,8 @@ public static class DelegateSupport
         {
             if (ReferenceEquals(null, other)) return false;
             if (ReferenceEquals(this, other)) return true;
-            return _hashCode.GetHashCode() == other.GetHashCode();
+            return _hashCode == other._hashCode && HasThis == other.HasThis && HasReturnBuffer == other.HasReturnBuffer &&
+                   ConstructedFromNative == other.ConstructedFromNative && _types.AsSpan().SequenceEqual(other._types);
         }
 
         public override bool Equals(object obj)
@@ -448,29 +496,21 @@ public static class DelegateSupport
         }
     }
 
+    // The native MethodInfo belongs to the conversion plan and is shared, so the reference no longer frees one
     private class Il2CppToMonoDelegateReference : Object
     {
-        public IntPtr MethodInfo;
         public Delegate ReferencedDelegate;
 
         public Il2CppToMonoDelegateReference(IntPtr obj0) : base(obj0)
         {
         }
 
-        public Il2CppToMonoDelegateReference(Delegate referencedDelegate, IntPtr methodInfo) : base(
+        public Il2CppToMonoDelegateReference(Delegate referencedDelegate) : base(
             ClassInjector.DerivedConstructorPointer<Il2CppToMonoDelegateReference>())
         {
             ClassInjector.DerivedConstructorBody(this);
 
             ReferencedDelegate = referencedDelegate;
-            MethodInfo = methodInfo;
-        }
-
-        ~Il2CppToMonoDelegateReference()
-        {
-            Marshal.FreeHGlobal(MethodInfo);
-            MethodInfo = IntPtr.Zero;
-            ReferencedDelegate = null;
         }
     }
 }

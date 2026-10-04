@@ -5,8 +5,8 @@ using System.Collections.Generic;
 using System.Linq;
 using System.Reflection;
 using System.Reflection.Emit;
+using System.Runtime.CompilerServices;
 using System.Runtime.InteropServices;
-using System.Runtime.Serialization;
 using System.Text;
 using Il2CppInterop.Common;
 using Il2CppInterop.Runtime.Attributes;
@@ -1229,7 +1229,7 @@ public static unsafe partial class ClassInjector
             body.Emit(OpCodes.Call,
                 typeof(Type).GetMethod(nameof(Type.GetTypeFromHandle), BindingFlags.Public | BindingFlags.Static)!);
             body.Emit(OpCodes.Call,
-                typeof(FormatterServices).GetMethod(nameof(FormatterServices.GetUninitializedObject),
+                typeof(RuntimeHelpers).GetMethod(nameof(RuntimeHelpers.GetUninitializedObject),
                     BindingFlags.Public | BindingFlags.Static)!);
             body.Emit(OpCodes.Stloc, local);
             body.Emit(OpCodes.Ldloc, local);

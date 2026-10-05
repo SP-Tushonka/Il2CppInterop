@@ -263,7 +263,7 @@ public static unsafe partial class IL2CPP
         return decoder.LastError == DecoderError.None && IsRet(ret) ? code : IntPtr.Zero;
     }
 
-    private sealed class UnmanagedCodeReader(byte* code, int length) : CodeReader
+    internal sealed class UnmanagedCodeReader(byte* code, int length) : CodeReader
     {
         private int myOffset;
 

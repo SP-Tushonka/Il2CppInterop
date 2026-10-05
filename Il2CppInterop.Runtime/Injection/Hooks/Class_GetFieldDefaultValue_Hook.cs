@@ -2,6 +2,7 @@
 using System.Collections.Generic;
 using System.Linq;
 using System.Runtime.InteropServices;
+using Iced.Intel;
 using Il2CppInterop.Common;
 using Il2CppInterop.Common.Extensions;
 using Il2CppInterop.Common.XrefScans;
@@ -165,6 +166,55 @@ namespace Il2CppInterop.Runtime.Injection.Hooks
             return 0;
         }
 
+        /// <summary>
+        ///     Find Class::GetFieldDefaultValue as the first direct call of Field::StaticGetValueInternal, which
+        ///     il2cpp_field_static_get_value reaches through tail jumps
+        /// </summary>
+        /// <returns>Address of the call target, or 0 when the chain does not match</returns>
+        private static nint FindThroughStaticGetValue()
+        {
+            if (!InjectorHelpers.TryGetIl2CppExport(nameof(IL2CPP.il2cpp_field_static_get_value), out var function))
+                return 0;
+
+            // Field::StaticGetValue sets an argument before its tail jump, so a few plain instructions may come first
+            for (var hop = 0; hop < 4; hop++)
+            {
+                var decoder = DecoderAt(function);
+                var next = (nint)0;
+                for (var i = 0; i < 4; i++)
+                {
+                    decoder.Decode(out var instruction);
+                    if (instruction.FlowControl == FlowControl.Next)
+                        continue;
+                    if (instruction.Mnemonic == Mnemonic.Jmp && instruction.Op0Kind == OpKind.NearBranch64)
+                        next = (nint)instruction.NearBranch64;
+                    break;
+                }
+                if (next == 0)
+                    break;
+                function = next;
+            }
+
+            var body = DecoderAt(function);
+            for (var i = 0; i < 64; i++)
+            {
+                body.Decode(out var instruction);
+                if (instruction.IsInvalid || instruction.FlowControl == FlowControl.Return)
+                    return 0;
+                if (instruction.Mnemonic == Mnemonic.Call && instruction.Op0Kind == OpKind.NearBranch64)
+                    return (nint)instruction.NearBranch64;
+            }
+
+            return 0;
+        }
+
+        private static Decoder DecoderAt(nint code)
+        {
+            var decoder = Decoder.Create(64, new IL2CPP.UnmanagedCodeReader((byte*)code, 512));
+            decoder.IP = (ulong)code;
+            return decoder;
+        }
+
         private static nint AsFunctionEntry(nint ptr)
         {
             ptr = FollowRel32Thunks(ptr);
@@ -197,6 +247,14 @@ namespace Il2CppInterop.Runtime.Injection.Hooks
 
         public override IntPtr FindTargetMethod()
         {
+            // The byte signatures miss some Unity 6 builds and can match an unrelated function, so the call chain goes first
+            if (Il2CppInteropRuntime.Instance.UnityVersion.Major >= 6000)
+            {
+                var fromCallChain = AsFunctionEntry(FindThroughStaticGetValue());
+                if (fromCallChain != 0)
+                    return fromCallChain;
+            }
+
             // NOTE: In some cases this pointer will be MetadataCache::GetFieldDefaultValueForField due to Field::GetDefaultFieldValue being
             // inlined but we'll treat it the same even though it doesn't receive the type parameter the RDX register
             // doesn't get cleared so we still get the same parameters

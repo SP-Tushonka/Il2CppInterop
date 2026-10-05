@@ -135,8 +135,9 @@ internal class MemoryUtils
         if (*(ushort*)optionalHeader != pe32Plus)
             return FunctionEntry.Unknown;
 
-        // Data directory 3 is IMAGE_DIRECTORY_ENTRY_EXCEPTION, at a fixed offset in the PE32+ optional header.
-        var exceptionDirectory = optionalHeader + 112;
+        // The data directories start 112 bytes into the PE32+ optional header, 8 bytes each.
+        // Entry 3 is IMAGE_DIRECTORY_ENTRY_EXCEPTION.
+        var exceptionDirectory = optionalHeader + 112 + 3 * 8;
         var tableRva = *(uint*)exceptionDirectory;
         var tableSize = *(uint*)(exceptionDirectory + 4);
         if (tableRva == 0 || tableSize < RuntimeFunctionSize)

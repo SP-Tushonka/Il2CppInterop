@@ -52,7 +52,18 @@ public static class UnstripGenerator
         var body = newMethod.CilMethodBody!.Instructions;
 
         body.Add(OpCodes.Ldsfld, delegateField);
-        if (!newMethod.IsStatic)
+        CilLocalVariable? pinnedThis = null;
+        if (!newMethod.IsStatic && newMethod.DeclaringType!.IsValueType)
+        {
+            // il2cpp takes a struct's this as the address of its data, which must not move during the call
+            pinnedThis = new CilLocalVariable(newMethod.DeclaringType.ToTypeSignature().MakeByReferenceType().MakePinnedType());
+            newMethod.CilMethodBody.LocalVariables.Add(pinnedThis);
+            body.Add(OpCodes.Ldarg_0);
+            body.Add(OpCodes.Stloc, pinnedThis);
+            body.Add(OpCodes.Ldloc, pinnedThis);
+            body.Add(OpCodes.Conv_U);
+        }
+        else if (!newMethod.IsStatic)
         {
             body.Add(OpCodes.Ldarg_0);
             body.Add(OpCodes.Call, imports.IL2CPP_Il2CppObjectBaseToPtrNotNull.Value);

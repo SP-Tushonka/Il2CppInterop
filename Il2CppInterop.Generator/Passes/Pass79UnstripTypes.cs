@@ -82,7 +82,7 @@ public static class Pass79UnstripTypes
         {
             typesUnstripped++;
             var clonedType = new TypeDefinition(unityType.Namespace, convertedTypeName, ForcePublic(unityType.Attributes),
-                unityType.BaseType == null ? null : newModule.DefaultImporter.ImportType(unityType.BaseType));
+                ResolveBaseType(processedAssembly.GlobalContext, unityType, imports));
             if (enclosingNewType == null)
             {
                 newModule.TopLevelTypes.Add(clonedType);
@@ -106,6 +106,29 @@ public static class Pass79UnstripTypes
 
         foreach (var nestedUnityType in unityType.NestedTypes)
             ProcessType(processedAssembly, nestedUnityType, processedType, imports, ref typesUnstripped);
+    }
+
+    /// <summary>
+    ///     Get the base type of a rebuilt type in the generated assemblies
+    /// </summary>
+    /// <param name="context">Rewrite context</param>
+    /// <param name="unityType">Type in the Unity assemblies</param>
+    /// <param name="imports">Runtime references of the target module</param>
+    /// <returns>Base type, or null for a type without one</returns>
+    private static ITypeDefOrRef? ResolveBaseType(RewriteGlobalContext context, TypeDefinition unityType, RuntimeAssemblyReferences imports)
+    {
+        if (unityType.BaseType == null)
+            return null;
+
+        // A Unity type keeps its assembly name in the generated assemblies, a corlib collection does not
+        if (unityType.BaseType is TypeSpecification)
+        {
+            var resolved = Pass80UnstripMethods.ResolveTypeInNewAssemblies(context, unityType.BaseType.ToTypeSignature(), imports);
+            if (resolved != null)
+                return imports.Module.DefaultImporter.ImportType(resolved.ToTypeDefOrRef());
+        }
+
+        return imports.Module.DefaultImporter.ImportType(unityType.BaseType);
     }
 
     private static TypeDefinition CloneEnum(TypeDefinition sourceEnum, Utf8String convertedTypeName, RuntimeAssemblyReferences imports)

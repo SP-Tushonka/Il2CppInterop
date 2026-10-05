@@ -20,7 +20,7 @@ public static class Pass80UnstripFields
             if (processedAssembly == null) continue;
             var imports = processedAssembly.Imports;
 
-            foreach (var unityType in unityAssembly.ManifestModule!.TopLevelTypes)
+            foreach (var unityType in unityAssembly.ManifestModule!.GetAllTypes())
             {
                 var processedType = processedAssembly.TryGetTypeByName(unityType.FullName);
                 if (processedType == null) continue;
@@ -51,6 +51,7 @@ public static class Pass80UnstripFields
                         (unityField.Attributes & ~FieldAttributes.FieldAccessMask) | FieldAttributes.Public, fieldType);
 
                     if (unityField.HasConstant()) newField.Constant = unityField.Constant;
+                    if (unityField.IsInstance()) newField.FieldOffset = unityField.FieldOffset;
 
                     processedType.NewType.Fields.Add(newField);
 

@@ -575,28 +575,7 @@ public static unsafe partial class ClassInjector
 
         ReportUnboundOverrides(type, boundMethods, unboundSlots);
 
-        var interfaceCount = baseClassPointer.InterfaceCount + interfaces.Count;
-        classPointer.InterfaceCount = (ushort)interfaceCount;
-        classPointer.ImplementedInterfaces = (Il2CppClass**)Marshal.AllocHGlobal(interfaceCount * IntPtr.Size);
-        for (var i = 0; i < baseClassPointer.InterfaceCount; i++)
-            classPointer.ImplementedInterfaces[i] = baseClassPointer.ImplementedInterfaces[i];
-        for (int i = baseClassPointer.InterfaceCount; i < interfaceCount; i++)
-            classPointer.ImplementedInterfaces[i] = interfaces[i - baseClassPointer.InterfaceCount].ClassPointer;
-
-        var interfaceOffsetsCount = baseClassPointer.InterfaceOffsetsCount + interfaces.Count;
-        classPointer.InterfaceOffsetsCount = (ushort)interfaceOffsetsCount;
-        classPointer.InterfaceOffsets =
-            (Il2CppRuntimeInterfaceOffsetPair*)Marshal.AllocHGlobal(interfaceOffsetsCount *
-                                                                     Marshal
-                                                                         .SizeOf<Il2CppRuntimeInterfaceOffsetPair>());
-        for (var i = 0; i < baseClassPointer.InterfaceOffsetsCount; i++)
-            classPointer.InterfaceOffsets[i] = baseClassPointer.InterfaceOffsets[i];
-        for (int i = baseClassPointer.InterfaceOffsetsCount; i < interfaceOffsetsCount; i++)
-            classPointer.InterfaceOffsets[i] = new Il2CppRuntimeInterfaceOffsetPair
-            {
-                interfaceType = interfaces[i - baseClassPointer.InterfaceOffsetsCount].ClassPointer,
-                offset = offsets[i - baseClassPointer.InterfaceOffsetsCount]
-            };
+        classPointer.InheritInterfaces(baseClassPointer, interfaces, offsets);
 
         for (var i = 0; i < abstractMethods.Length; i++)
         {
@@ -826,7 +805,11 @@ public static unsafe partial class ClassInjector
         {
             for (var i = 0; i < baseClass.InterfaceOffsetsCount; i++)
             {
-                var pair = baseClass.InterfaceOffsets[i];
+                var pair = new Il2CppRuntimeInterfaceOffsetPair
+                {
+                    interfaceType = baseClass.DispatchInterface(i),
+                    offset = baseClass.DispatchInterfaceOffset(i),
+                };
 
                 // A pair that cannot be sized cannot be ruled in or out, and a later pair may still own the slot
                 var interfaceClass = UnityVersionHandler.Wrap(pair.interfaceType);

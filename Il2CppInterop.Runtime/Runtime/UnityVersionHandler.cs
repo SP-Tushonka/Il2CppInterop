@@ -79,6 +79,11 @@ public static class UnityVersionHandler
     public static bool HasShimForGetMethod { get; private set; }
     public static bool IsMetadataV29OrHigher { get; private set; }
 
+    /// <summary>
+    ///     Whether classes keep their interfaces in one array instead of two
+    /// </summary>
+    public static bool HasSingleInterfaceArray { get; private set; }
+
     // Version since which extra_arg is set to invoke_multicast, necessitating constructor calls
     public static bool MustUseDelegateConstructor => IsMetadataV29OrHigher;
 
@@ -98,6 +103,7 @@ public static class UnityVersionHandler
 
         HasGetMethodFromReflection = unityVersion > new Version(2018, 1, 0);
         IsMetadataV29OrHigher = unityVersion >= new Version(2021, 2, 0);
+        HasSingleInterfaceArray = unityVersion >= new Version(6000, 6, 0);
 
         HasShimForGetMethod = unityVersion >= new Version(2020, 3, 41) || IsMetadataV29OrHigher;
 

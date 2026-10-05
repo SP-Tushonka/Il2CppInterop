@@ -83,7 +83,7 @@ public unsafe partial class ClassInjector
         Logger.Instance.LogDebug(" ImplementedInterfaces ({InterfaceCount}):", classStruct.InterfaceCount);
         for (var i = 0; i < classStruct.InterfaceCount; i++)
         {
-            var @interface = UnityVersionHandler.Wrap(classStruct.ImplementedInterfaces[i]);
+            var @interface = UnityVersionHandler.Wrap(classStruct.ImplementedInterface(i));
 
             Logger.Instance.LogDebug("  [{I}] {Name}", i, Marshal.PtrToStringUTF8(@interface.Name));
         }
@@ -91,10 +91,9 @@ public unsafe partial class ClassInjector
         Logger.Instance.LogDebug(" InterfaceOffsets ({InterfaceOffsetsCount}):", classStruct.InterfaceOffsetsCount);
         for (var i = 0; i < classStruct.InterfaceOffsetsCount; i++)
         {
-            var pair = classStruct.InterfaceOffsets[i];
-            var @interface = UnityVersionHandler.Wrap(pair.interfaceType);
+            var @interface = UnityVersionHandler.Wrap(classStruct.DispatchInterface(i));
 
-            Logger.Instance.LogDebug("  [{I}] {Offset} - {Name}", i, pair.offset, Marshal.PtrToStringUTF8(@interface.Name));
+            Logger.Instance.LogDebug("  [{I}] {Offset} - {Name}", i, classStruct.DispatchInterfaceOffset(i), Marshal.PtrToStringUTF8(@interface.Name));
         }
 
         Logger.Instance.LogDebug(" TypeHierarchy ({TypeHierarchyDepth}):", classStruct.TypeHierarchyDepth);

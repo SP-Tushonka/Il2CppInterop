@@ -244,6 +244,26 @@ public unsafe struct Il2CppRuntimeInterfaceOffsetPair
     public int offset;
 }
 
+/// <summary>
+///     One entry of the single interface array a class keeps from 6000.6. Entries past interface_offsets_count only
+///     serve reflection.
+/// </summary>
+[StructLayout(LayoutKind.Sequential)]
+public unsafe struct Il2CppRuntimeInterfaceData
+{
+    public Il2CppClass* interfaceType;
+
+    /// <summary>
+    ///     Vtable offset of the interface's block, -1 for an entry that only serves reflection
+    /// </summary>
+    public int offset;
+
+    /// <summary>
+    ///     Hops from the class that declares the interface, negative for an entry grafted onto an array type
+    /// </summary>
+    public int depth;
+}
+
 [StructLayout(LayoutKind.Sequential)]
 public struct Il2CppObject
 {

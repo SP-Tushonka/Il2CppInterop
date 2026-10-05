@@ -51,7 +51,21 @@ public interface INativeClassStruct : INativeStruct
 
     unsafe ref Il2CppFieldInfo* Fields { get; }
     unsafe ref Il2CppMethodInfo** Methods { get; }
-    unsafe ref Il2CppClass** ImplementedInterfaces { get; }
-    unsafe ref Il2CppRuntimeInterfaceOffsetPair* InterfaceOffsets { get; }
+
+    /// <summary>
+    ///     Implemented interfaces, in layouts before 6000.6
+    /// </summary>
+    unsafe ref Il2CppClass** ImplementedInterfaces => throw new NotSupportedException("This layout keeps one interface array");
+
+    /// <summary>
+    ///     Interfaces with their vtable offsets, in layouts before 6000.6
+    /// </summary>
+    unsafe ref Il2CppRuntimeInterfaceOffsetPair* InterfaceOffsets => throw new NotSupportedException("This layout keeps one interface array");
+
+    /// <summary>
+    ///     The single interface array of layouts from 6000.6
+    /// </summary>
+    unsafe ref Il2CppRuntimeInterfaceData* Interfaces => throw new NotSupportedException("This layout keeps two interface arrays");
+
     unsafe ref Il2CppClass** TypeHierarchy { get; }
 }

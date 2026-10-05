@@ -75,7 +75,8 @@ internal static class AsmResolverExtensions
 
     public static bool IsSystemValueType(this GenericParameterConstraint constraint) => constraint.Constraint?.FullName is "System.ValueType";
 
-    public static bool IsInterface(this GenericParameterConstraint constraint) => constraint.Constraint?.Resolve()?.IsInterface == true;
+    public static bool IsInterface(this GenericParameterConstraint constraint) =>
+        (constraint.Constraint is TypeSpecification { Signature: GenericInstanceTypeSignature generic } ? generic.GenericType : constraint.Constraint)?.Resolve()?.IsInterface == true;
 
     public static ITypeDefOrRef? AttributeType(this CustomAttribute attribute) => attribute.Constructor?.DeclaringType;
 

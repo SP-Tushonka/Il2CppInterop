@@ -16,6 +16,15 @@ public static class ConstraintRewriter
             if (constraint.IsSystemValueType() || constraint.IsInterface())
                 continue;
 
+            // Unmanaged is System.ValueType marked with UnmanagedType. Both stay CLR types.
+            if (constraint.Constraint is TypeSpecification { Signature: CustomModifierTypeSignature { BaseType.FullName: "System.ValueType" } })
+            {
+                var unmanagedType = imports.Module.DefaultImporter.ImportType(typeof(System.Runtime.InteropServices.UnmanagedType));
+                var unmanaged = new CustomModifierTypeSignature(unmanagedType, true, imports.Module.ValueType());
+                target.Constraints.Add(new GenericParameterConstraint(unmanaged.ToTypeDefOrRef()));
+                continue;
+            }
+
             if (constraint.IsSystemEnum())
             {
                 target.Constraints.Add(new GenericParameterConstraint(imports.Module.Enum().ToTypeDefOrRef()));
@@ -26,8 +35,10 @@ public static class ConstraintRewriter
             if (constraintType == null)
                 continue;
 
+            // A constraint from the Cpp2IL dummies may not resolve, the generated type it maps to does
             var rewritten = resolve(constraintType);
-            if (rewritten != null)
+            var rewrittenDefinition = rewritten is GenericInstanceTypeSignature generic ? generic.GenericType.Resolve() : rewritten?.Resolve();
+            if (rewritten != null && rewrittenDefinition?.IsInterface != true)
                 target.Constraints.Add(new GenericParameterConstraint(rewritten.ToTypeDefOrRef()));
         }
     }

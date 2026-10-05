@@ -10,7 +10,8 @@ namespace Il2CppInterop.StructGenerator;
 public record Il2CppStructWrapperGeneratorOptions(
     string HeadersDirectory,
     string OutputDirectory,
-    ILogger? Logger
+    ILogger? Logger,
+    string? ExistingDirectory = null
 );
 
 // TODO: Instead expose as source generator (might not be viable since clang is platform-dependent)
@@ -18,6 +19,20 @@ public static class Il2CppStructWrapperGenerator
 {
     private static readonly Dictionary<int, List<VersionSpecificGenerator>> SGenerators = new();
     internal static ILogger? Logger { get; set; }
+
+    /// <summary>
+    ///     Write stand-ins for the standard library headers Unity 6.5 includes. The bundled libclang cannot parse the
+    ///     ones a newer MSVC ships.
+    /// </summary>
+    /// <returns>Directory to add to the include path</returns>
+    private static string WriteStlStubs()
+    {
+        var directory = Path.Combine(Path.GetTempPath(), "Il2CppInterop.StructGenerator", "stl");
+        Directory.CreateDirectory(directory);
+        foreach (var (name, content) in Config.StlStubs)
+            File.WriteAllText(Path.Combine(directory, name), content);
+        return directory;
+    }
 
     private static int GetMetadataVersion(string libil2CppPath)
     {
@@ -141,6 +156,9 @@ public static class Il2CppStructWrapperGenerator
                 if (!File.Exists($"{classInternalsPath}_backup"))
                 {
                     var classInternalsData = File.ReadAllText(classInternalsPath);
+                    // From 6000.3 the class shares rgctx_data with genericParameterFlags. Both are pointers.
+                    classInternalsData = Regex.Replace(classInternalsData,
+                        @"union\s*\{\s*(const Il2CppRGCTXData\* rgctx_data;)[^}]*genericParameterFlags;[^}]*\};", "$1");
                     // I have to do this because the lib I use doesn't recognize these unions, so I have to name them in the most disgusting way imaginable
                     classInternalsData = Regex.Replace(classInternalsData,
                         @"(union.{0,60}?rgctx_data;.*?method(?:Definition|MetadataHandle);.*?});", "$1 runtime_data;",
@@ -155,13 +173,16 @@ public static class Il2CppStructWrapperGenerator
             }
             if (!SGenerators.ContainsKey(metadataVersion))
                 SGenerators[metadataVersion] = new List<VersionSpecificGenerator>();
-            var compilation = CppParser.ParseFiles(new List<string> { objectInternalsPath, classInternalsPath },
-                new CppParserOptions
-                {
-                    ParseAsCpp = true,
-                    AutoSquashTypedef = false,
-                    ParseMacros = true
-                });
+            var parserOptions = new CppParserOptions
+            {
+                ParseAsCpp = true,
+                AutoSquashTypedef = false,
+                ParseMacros = true
+            };
+            parserOptions.IncludeFolders.Add(WriteStlStubs());
+            var compilation = CppParser.ParseFiles(new List<string> { objectInternalsPath, classInternalsPath }, parserOptions);
+            foreach (var error in compilation.Diagnostics.Messages.Where(it => it.Type == CppLogMessageType.Error))
+                Logger?.LogWarning("{} {}", version, error);
             Logger?.LogInformation("Parsing {}", version);
             var classes = compilation.Classes.ToArray();
             foreach (var @class in classes) VisitClass(@class, metadataVersion, version, classes);
@@ -196,33 +217,113 @@ public static class Il2CppStructWrapperGenerator
             }
         }
 
-        foreach (var generator in SGenerators.Values.SelectMany(x => x))
+        var generators = SGenerators.Values.SelectMany(x => x).ToList();
+        var renames = new Dictionary<string, string>();
+        if (options.ExistingDirectory != null)
+            ReuseExisting(options.ExistingDirectory, generators, renames);
+
+        foreach (var generator in generators)
         {
-            var generatorOutputDir =
-                Path.Combine(options.OutputDirectory,
-                    generator.NativeStructGenerator.CppClass.Name.Replace("Il2Cpp", string.Empty));
+            var generatorOutputDir = Path.Combine(options.OutputDirectory, KindOf(generator));
             if (!Directory.Exists(generatorOutputDir))
                 Directory.CreateDirectory(generatorOutputDir);
-            CodeGenFile file = new()
-            {
-                Namespace =
-                    $"Il2CppInterop.Runtime.Runtime.VersionSpecific.{generator.NativeStructGenerator.CppClass.Name.Replace("Il2Cpp", string.Empty)}",
-                Usings =
-                {
-                    "System",
-                    "System.Runtime.InteropServices"
-                },
-                Elements =
-                {
-                    generator.HandlerGenerator.HandlerClass
-                }
-            };
-            foreach (var extraUsing in generator.ExtraUsings)
-                file.Usings.Add(extraUsing);
-            file.WriteTo(Path.Combine(generatorOutputDir,
-                $"{generator.NativeStructGenerator.NativeStruct.Name.Replace("Il2Cpp", string.Empty)}.cs"));
+            File.WriteAllText(Path.Combine(generatorOutputDir,
+                    $"{generator.NativeStructGenerator.NativeStruct.Name.Replace("Il2Cpp", string.Empty)}.cs"),
+                ApplyRenames(BuildFile(generator), renames));
         }
 
         Logger = null;
     }
+
+    /// <summary>
+    ///     Drop every generated layout a checked-in one already matches and point references at the checked-in name.
+    ///     A run over a few versions then only adds what is new to them.
+    /// </summary>
+    /// <param name="existingDirectory">The checked-in VersionSpecific directory</param>
+    /// <param name="generators">Generated layouts, matched ones are removed</param>
+    /// <param name="renames">Qualified struct names to replace in the remaining output</param>
+    private static void ReuseExisting(string existingDirectory, List<VersionSpecificGenerator> generators,
+        Dictionary<string, string> renames)
+    {
+        var existing = Directory.GetDirectories(existingDirectory)
+            .ToDictionary(Path.GetFileName, directory => Directory.GetFiles(directory, "*.cs")
+                .Select(path => ReadLayout(File.ReadAllText(path)))
+                .Where(layout => layout != null)
+                .Select(layout => layout!.Value)
+                .ToList());
+
+        // A layout only compares equal once the layouts it embeds carry their checked-in names
+        var matched = true;
+        while (matched)
+        {
+            matched = false;
+            foreach (var generator in generators.ToList())
+            {
+                var layout = ReadLayout(ApplyRenames(BuildFile(generator), renames));
+                if (layout == null || !existing.TryGetValue(KindOf(generator), out var candidates))
+                    continue;
+
+                var match = candidates.FirstOrDefault(candidate => candidate.Body == layout.Value.Body);
+                if (match.Name == null)
+                    continue;
+
+                Logger?.LogInformation("{} matches the checked-in {}", layout.Value.Name, match.Name);
+                renames[layout.Value.Name] = match.Name;
+                generators.Remove(generator);
+                matched = true;
+            }
+        }
+    }
+
+    /// <summary>
+    ///     Read the qualified struct name and the field and bitfield lines of a struct handler source
+    /// </summary>
+    /// <param name="source">Handler source</param>
+    /// <returns>Name as Handler.Struct and the trimmed body, or null for a file without a native struct</returns>
+    private static (string Name, string Body)? ReadLayout(string source)
+    {
+        var lines = source.Split('\n').Select(line => line.TrimEnd('\r')).ToList();
+        var handler = lines.Select(line => Regex.Match(line, @"public unsafe class (\w+)")).FirstOrDefault(match => match.Success);
+        var start = lines.FindIndex(line => line.TrimStart().StartsWith("internal unsafe struct "));
+        if (handler == null || start < 0)
+            return null;
+
+        var closing = new string(' ', lines[start].Length - lines[start].TrimStart().Length) + "}";
+        var end = lines.FindIndex(start + 1, line => line == closing);
+        var body = lines.Skip(start + 2).Take(end - start - 2)
+            .Select(line => line.Trim())
+            .Where(line => line.Length > 0 && !line.StartsWith("//"));
+        return ($"{handler.Groups[1].Value}.{lines[start].Trim()["internal unsafe struct ".Length..].Trim()}", string.Join("\n", body));
+    }
+
+    /// <summary>
+    ///     Build the source file of a struct handler
+    /// </summary>
+    /// <param name="generator">Generated layout</param>
+    /// <returns>File contents</returns>
+    private static string BuildFile(VersionSpecificGenerator generator)
+    {
+        CodeGenFile file = new()
+        {
+            Namespace = $"Il2CppInterop.Runtime.Runtime.VersionSpecific.{KindOf(generator)}",
+            Usings =
+            {
+                "System",
+                "System.Runtime.InteropServices"
+            },
+            Elements =
+            {
+                generator.HandlerGenerator.HandlerClass
+            }
+        };
+        foreach (var extraUsing in generator.ExtraUsings)
+            file.Usings.Add(extraUsing);
+        return file.Build();
+    }
+
+    private static string KindOf(VersionSpecificGenerator generator) =>
+        generator.NativeStructGenerator.CppClass.Name.Replace("Il2Cpp", string.Empty);
+
+    private static string ApplyRenames(string source, Dictionary<string, string> renames) =>
+        renames.Aggregate(source, (text, rename) => text.Replace(rename.Key, rename.Value));
 }

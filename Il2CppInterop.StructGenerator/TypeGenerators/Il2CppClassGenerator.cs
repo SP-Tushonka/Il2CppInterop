@@ -112,6 +112,7 @@ internal class Il2CppClassGenerator : VersionSpecificGenerator
         new ByRefWrapper("Il2CppMethodInfo**", "Methods", new[] { "methods" }),
         new ByRefWrapper("Il2CppClass**", "ImplementedInterfaces", new[] { "implementedInterfaces" }),
         new ByRefWrapper("Il2CppRuntimeInterfaceOffsetPair*", "InterfaceOffsets", new[] { "interfaceOffsets" }),
+        new ByRefWrapper("Il2CppRuntimeInterfaceData*", "Interfaces", new[] { "interfaces" }),
         new ByRefWrapper("Il2CppClass**", "TypeHierarchy", new[] { "typeHierarchy" })
     };
 }

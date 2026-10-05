@@ -102,7 +102,9 @@ var wrapperCommand = new Command("wrapper-gen")
     {
         IsRequired = true
     }.ExistingOnly(),
-    new Option<DirectoryInfo>("--output", "Directory to write managed struct wrapper sources to") {IsRequired = true}
+    new Option<DirectoryInfo>("--output", "Directory to write managed struct wrapper sources to") {IsRequired = true},
+    new Option<DirectoryInfo>("--existing",
+        "Checked-in VersionSpecific directory. Layouts it already has are reused instead of written again.").ExistingOnly()
 };
 wrapperCommand.Description = "Tools for generating Il2Cpp struct wrappers from libi2lcpp source";
 wrapperCommand.Handler = CommandHandler.Create((WrapperCommandOptions opts) =>
@@ -138,7 +140,7 @@ internal record BaseCmdOptions(bool Verbose)
     }
 }
 
-internal record WrapperCommandOptions(DirectoryInfo Headers, DirectoryInfo Output, bool Verbose)
+internal record WrapperCommandOptions(DirectoryInfo Headers, DirectoryInfo Output, DirectoryInfo? Existing, bool Verbose)
 {
     public virtual Il2CppStructWrapperGeneratorOptions Build()
     {
@@ -149,7 +151,7 @@ internal record WrapperCommandOptions(DirectoryInfo Headers, DirectoryInfo Outpu
                 .AddSimpleConsole(opt => { opt.SingleLine = true; });
         });
         var logger = loggerFactory.CreateLogger("Il2CppInterop");
-        return new Il2CppStructWrapperGeneratorOptions(Headers.FullName, Output.FullName, logger);
+        return new Il2CppStructWrapperGeneratorOptions(Headers.FullName, Output.FullName, logger, Existing?.FullName);
     }
 }
 

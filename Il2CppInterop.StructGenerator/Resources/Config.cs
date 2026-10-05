@@ -35,6 +35,22 @@ internal static class Config
         ["Il2CppMethodInfo"] = typeof(Il2CppMethodInfoGenerator)
     };
 
+    /// <summary>
+    ///     Standard library headers by name, holding only the declarations the struct headers name. Template bodies
+    ///     using them are never instantiated.
+    /// </summary>
+    public static readonly Dictionary<string, string> StlStubs = new()
+    {
+        ["cstddef"] = "#include <stddef.h>\n",
+        ["string"] = "namespace std {\ntemplate<class C> struct char_traits;\ntemplate<class T> class allocator;\n" +
+                     "template<class C, class T = char_traits<C>, class A = allocator<C> > class basic_string;\n" +
+                     "typedef basic_string<char> string;\n}\n",
+        ["type_traits"] = "",
+        ["vector"] = "",
+        ["cmath"] = "",
+        ["atomic"] = "",
+    };
+
     public static readonly string[] MetadataVersionContainers =
     {
         Path.Combine("vm", "MetadataCache.cpp"),

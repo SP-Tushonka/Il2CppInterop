@@ -291,7 +291,9 @@ public static class UnstripTranslator
 
                 var constrainedToClrStruct = targetBuilder.Count > 0
                     && targetBuilder[targetBuilder.Count - 1].OpCode == OpCodes.Constrained
-                    && targetBuilder[targetBuilder.Count - 1].Operand is ITypeDefOrRef constrainedOperand && constrainedOperand.IsValueType();
+                    && targetBuilder[targetBuilder.Count - 1].Operand is ITypeDefOrRef constrainedOperand
+                    // A corlib primitive does not resolve from the generated module, the corlib factory still knows it
+                    && (constrainedOperand.IsValueType() || imports.Module.CorLibTypeFactory.FromType(constrainedOperand)?.IsValueType == true);
                 if (constrainedToClrStruct && methodArg.Signature != null && methodArg.Signature.HasThis && methodArg.DeclaringType?.FullName is "System.Object" or "System.ValueType")
                 {
                     // The receiver is a plain CLR struct, so the call has to stay in the CLR corlib

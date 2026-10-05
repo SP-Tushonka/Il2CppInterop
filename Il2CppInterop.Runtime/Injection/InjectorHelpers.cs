@@ -258,7 +258,7 @@ namespace Il2CppInterop.Runtime.Injection
                 pClassInit = GetClassInitSubstitute();
             }
 
-            Logger.Instance.LogTrace("Class::Init: 0x{PClassInitAddress}", pClassInit.ToString("X2"));
+            Logger.Instance.LogInformation("Class::Init found at GameAssembly+0x{Rva}", (pClassInit - Il2CppModule.BaseAddress).ToString("X"));
 
             return Marshal.GetDelegateForFunctionPointer<d_ClassInit>(pClassInit);
         }

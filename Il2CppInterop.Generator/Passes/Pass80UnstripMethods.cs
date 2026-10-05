@@ -22,7 +22,7 @@ public static class Pass80UnstripMethods
             if (processedAssembly == null) continue;
             var imports = processedAssembly.Imports;
 
-            foreach (var unityType in unityAssembly.ManifestModule!.TopLevelTypes)
+            foreach (var unityType in unityAssembly.ManifestModule!.GetAllTypes())
             {
                 var processedType = processedAssembly.TryGetTypeByName(unityType.FullName);
                 if (processedType == null) continue;
@@ -34,7 +34,10 @@ public static class Pass80UnstripMethods
                     var classConstructor = !IsDelegate(processedType.NewType)
                         && (processedType.ComputedTypeSpecifics == TypeRewriteContext.TypeSpecifics.ReferenceType
                             || (processedType.OriginalType == null && processedType.NewType.IsReferenceType()));
-                    if (unityMethod.IsConstructor && (unityMethod.IsStatic || (processedType.ComputedTypeSpecifics != TypeRewriteContext.TypeSpecifics.BlittableStruct && !classConstructor))) continue;
+                    // A struct il2cpp stripped whole is rebuilt from its plain fields, so it constructs like a blittable one
+                    var plainStruct = processedType.ComputedTypeSpecifics == TypeRewriteContext.TypeSpecifics.BlittableStruct
+                        || (processedType.OriginalType == null && processedType.NewType.IsValueType);
+                    if (unityMethod.IsConstructor && (unityMethod.IsStatic || (!plainStruct && !classConstructor))) continue;
                     if (unityMethod.IsAbstract) continue;
                     if (!unityMethod.HasMethodBody && !isICall) continue; // CoreCLR chokes on no-body methods
 
@@ -174,15 +177,62 @@ public static class Pass80UnstripMethods
         return newProperty;
     }
 
+    /// <summary>
+    ///     Whether spans resolve to the CLR types while a method body is translated. The translator sets it only for
+    ///     a body whose il2cpp form needs a span member il2cpp does not have.
+    /// </summary>
+    [ThreadStatic] internal static bool AmbientClrSpans;
+
+    /// <summary>
+    ///     Resolve a Unity type to its type in the generated assemblies and import it
+    /// </summary>
+    /// <param name="context">Rewrite context</param>
+    /// <param name="unityType">Type in the Unity assemblies</param>
+    /// <param name="imports">Runtime references of the target module</param>
+    /// <param name="useSystemCorlibPrimitives">Keep primitives and string as CLR types</param>
+    /// <param name="clrSpans">Map spans to the CLR types, by default as <see cref="AmbientClrSpans"/> says</param>
+    /// <returns>Imported type, or null when it cannot be resolved</returns>
     internal static TypeSignature? ResolveTypeInNewAssemblies(RewriteGlobalContext context, TypeSignature? unityType,
-        RuntimeAssemblyReferences imports, bool useSystemCorlibPrimitives = true)
+        RuntimeAssemblyReferences imports, bool useSystemCorlibPrimitives = true, bool? clrSpans = null)
     {
-        var resolved = ResolveTypeInNewAssembliesRaw(context, unityType, imports, useSystemCorlibPrimitives);
+        var resolved = ResolveTypeInNewAssembliesRaw(context, unityType, imports, useSystemCorlibPrimitives, clrSpans);
         return resolved != null ? imports.Module.DefaultImporter.ImportTypeSignature(resolved) : null;
     }
 
+    /// <summary>
+    ///     Corlib types rebuilt code keeps on the CLR. Each says whether it is a value type, which the unity-libs
+    ///     references cannot tell, and whether .NET exposes it through System.Memory.
+    /// </summary>
+    private static readonly Dictionary<string, (bool ValueType, bool InSystemMemory)> ClrOnlyCorlibTypes = new()
+    {
+        ["System.Span`1"] = (true, false),
+        ["System.ReadOnlySpan`1"] = (true, false),
+        ["System.MemoryExtensions"] = (false, true),
+        ["System.Runtime.InteropServices.MemoryMarshal"] = (false, false),
+        // The modreq of a ref readonly return, which has to match the CLR method it marks
+        ["System.Runtime.InteropServices.InAttribute"] = (false, false),
+    };
+
+    internal static bool IsClrOnlyCorlibType(string? fullName) => fullName != null && ClrOnlyCorlibTypes.ContainsKey(fullName);
+
+    /// <summary>
+    ///     Check whether a signature type is or contains one of the corlib types rebuilt code keeps on the CLR
+    /// </summary>
+    /// <param name="type">Type in the Unity assemblies</param>
+    /// <returns>Whether it mentions a CLR only corlib type</returns>
+    internal static bool MentionsClrOnlyType(TypeSignature? type) => type switch
+    {
+        null => false,
+        GenericInstanceTypeSignature generic => MentionsClrOnlyType(generic.GenericType.ToTypeSignature()) || generic.TypeArguments.Any(MentionsClrOnlyType),
+        TypeSpecificationSignature specification => MentionsClrOnlyType(specification.BaseType),
+        _ => ClrOnlyCorlibTypes.ContainsKey(type.FullName),
+    };
+
+    private static readonly AssemblyReference SystemMemory =
+        new("System.Memory", new Version(6, 0, 0, 0), false, [0xcc, 0x7b, 0x13, 0xff, 0xcd, 0x2d, 0xdd, 0x51]);
+
     internal static TypeSignature? ResolveTypeInNewAssembliesRaw(RewriteGlobalContext context, TypeSignature? unityType,
-        RuntimeAssemblyReferences imports, bool useSystemCorlibPrimitives = true)
+        RuntimeAssemblyReferences imports, bool useSystemCorlibPrimitives = true, bool? clrSpans = null)
     {
         if (unityType is null)
             return null;
@@ -192,14 +242,14 @@ public static class Pass80UnstripMethods
 
         if (unityType is ByReferenceTypeSignature)
         {
-            var resolvedElementType = ResolveTypeInNewAssemblies(context, unityType.GetElementType(), imports);
+            var resolvedElementType = ResolveTypeInNewAssemblies(context, unityType.GetElementType(), imports, clrSpans: clrSpans);
             return resolvedElementType?.MakeByReferenceType();
         }
 
         if (unityType is ArrayBaseTypeSignature arrayType)
         {
             if (arrayType.Rank != 1) return null;
-            var resolvedElementType = ResolveTypeInNewAssemblies(context, unityType.GetElementType(), imports);
+            var resolvedElementType = ResolveTypeInNewAssemblies(context, unityType.GetElementType(), imports, clrSpans: clrSpans);
             if (resolvedElementType == null) return null;
             if (resolvedElementType.FullName == "System.String")
                 return imports.Il2CppStringArray;
@@ -214,20 +264,20 @@ public static class Pass80UnstripMethods
 
         if (unityType is PointerTypeSignature)
         {
-            var resolvedElementType = ResolveTypeInNewAssemblies(context, unityType.GetElementType(), imports);
+            var resolvedElementType = ResolveTypeInNewAssemblies(context, unityType.GetElementType(), imports, clrSpans: clrSpans);
             return resolvedElementType?.MakePointerType();
         }
 
         if (unityType is PinnedTypeSignature)
         {
-            var resolvedElementType = ResolveTypeInNewAssemblies(context, unityType.GetElementType(), imports);
+            var resolvedElementType = ResolveTypeInNewAssemblies(context, unityType.GetElementType(), imports, clrSpans: clrSpans);
             return resolvedElementType?.MakePinnedType();
         }
 
         if (unityType is CustomModifierTypeSignature customModifier)
         {
-            var resolvedElementType = ResolveTypeInNewAssemblies(context, customModifier.BaseType, imports);
-            var resolvedModifierType = ResolveTypeInNewAssemblies(context, customModifier.ModifierType.ToTypeSignature(), imports);
+            var resolvedElementType = ResolveTypeInNewAssemblies(context, customModifier.BaseType, imports, clrSpans: clrSpans);
+            var resolvedModifierType = ResolveTypeInNewAssemblies(context, customModifier.ModifierType.ToTypeSignature(), imports, clrSpans: clrSpans);
             return resolvedElementType is not null && resolvedModifierType is not null
                 ? new CustomModifierTypeSignature(resolvedModifierType.ToTypeDefOrRef(), customModifier.IsRequired, resolvedElementType)
                 : null;
@@ -235,12 +285,12 @@ public static class Pass80UnstripMethods
 
         if (unityType is GenericInstanceTypeSignature genericInstance)
         {
-            var baseRef = ResolveTypeInNewAssembliesRaw(context, genericInstance.GenericType.ToTypeSignature(), imports);
+            var baseRef = ResolveTypeInNewAssembliesRaw(context, genericInstance.GenericType.ToTypeSignature(), imports, clrSpans: clrSpans);
             if (baseRef == null) return null;
             var newInstance = new GenericInstanceTypeSignature(baseRef.ToTypeDefOrRef(), baseRef.IsValueType());
             foreach (var unityGenericArgument in genericInstance.TypeArguments)
             {
-                var resolvedArgument = ResolveTypeInNewAssemblies(context, unityGenericArgument, imports);
+                var resolvedArgument = ResolveTypeInNewAssemblies(context, unityGenericArgument, imports, clrSpans: clrSpans);
                 if (resolvedArgument == null) return null;
                 newInstance.TypeArguments.Add(resolvedArgument);
             }
@@ -273,6 +323,15 @@ public static class Pass80UnstripMethods
 
         if (useSystemCorlibPrimitives && (unityType.IsPrimitive() || unityType.ElementType is ElementType.String or ElementType.Void))
             return imports.Module.CorLibTypeFactory.FromElementType(unityType.ElementType);
+
+        // Unity 6 bindings pin managed strings and arrays through spans before an icall, which only works on CLR spans
+        if ((clrSpans ?? AmbientClrSpans) && ClrOnlyCorlibTypes.TryGetValue(unityType.FullName, out var clrType) && targetAssemblyName is "mscorlib" or "netstandard" or "System.Runtime" or "System.Memory")
+        {
+            IResolutionScope scope = clrType.InSystemMemory
+                ? imports.Module.DefaultImporter.ImportScope(SystemMemory)
+                : imports.Module.CorLibTypeFactory.CorLibScope;
+            return new TypeReference(imports.Module, scope, unityType.Namespace, unityType.Name).ToTypeSignature(clrType.ValueType);
+        }
 
         if (targetAssemblyName == "UnityEngine")
             foreach (var assemblyRewriteContext in context.Assemblies)

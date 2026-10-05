@@ -20,7 +20,45 @@ public static class UnstripTranslator
     /// </summary>
     public static string? LastFailure { get; private set; }
 
+    /// <summary>
+    ///     Set while translating with il2cpp spans when the body needs a span member only the CLR has
+    /// </summary>
+    [ThreadStatic] private static bool s_needsClrSpans;
+
+    /// <summary>
+    ///     Translate a Unity method body into the generated assemblies. A body that pins or reads span memory is
+    ///     translated again with CLR spans, since the il2cpp span wrappers return refs into a boxed copy.
+    /// </summary>
+    /// <param name="original">Method in the Unity assemblies</param>
+    /// <param name="target">Generated method to fill</param>
+    /// <param name="typeRewriteContext">Context of the declaring type</param>
+    /// <param name="imports">Runtime references of the target module</param>
+    /// <returns>Whether the body was translated</returns>
     public static bool TranslateMethod(MethodDefinition original, MethodDefinition target,
+        TypeRewriteContext typeRewriteContext, RuntimeAssemblyReferences imports)
+    {
+        try
+        {
+            Pass80UnstripMethods.AmbientClrSpans = false;
+            s_needsClrSpans = false;
+            var translated = TranslateMethodBody(original, target, typeRewriteContext, imports);
+            if (!s_needsClrSpans)
+                return translated;
+
+            // Spans received are converted on entry, nothing converts one back for a return
+            if (Pass80UnstripMethods.MentionsClrOnlyType(original.Signature!.ReturnType))
+                return false;
+
+            Pass80UnstripMethods.AmbientClrSpans = true;
+            return TranslateMethodBody(original, target, typeRewriteContext, imports);
+        }
+        finally
+        {
+            Pass80UnstripMethods.AmbientClrSpans = false;
+        }
+    }
+
+    private static bool TranslateMethodBody(MethodDefinition original, MethodDefinition target,
         TypeRewriteContext typeRewriteContext, RuntimeAssemblyReferences imports)
     {
         if (original.CilMethodBody is null)
@@ -57,6 +95,11 @@ public static class UnstripTranslator
         var classConstructor = original.IsConstructor && !original.IsStatic && target.DeclaringType != null && !target.DeclaringType.IsValueType();
         LastFailure = "object allocation, neither the class nor its base exists in il2cpp";
         if (classConstructor && !EmitObjectAllocation(target, globalContext, imports))
+            return false;
+
+        LastFailure = "span parameter, only a Span or ReadOnlySpan of a struct converts";
+        var clrSpanParameters = Pass80UnstripMethods.AmbientClrSpans ? EmitClrSpanParameters(original, target, globalContext, imports) : [];
+        if (clrSpanParameters == null)
             return false;
 
         foreach (var bodyInstruction in original.CilMethodBody.Instructions)
@@ -227,6 +270,25 @@ public static class UnstripTranslator
                 var methodArg = (IMethodDescriptor)bodyInstruction.Operand;
                 var useSystemCorlibType = methodArg.Signature?.HasThis ?? true;
 
+                if (!Pass80UnstripMethods.AmbientClrSpans && NeedsClrSpanMember(methodArg))
+                {
+                    s_needsClrSpans = true;
+                    return false;
+                }
+
+                // A span over an array stays an il2cpp span when a generated wrapper consumes it right away
+                var clrSpans = Pass80UnstripMethods.AmbientClrSpans &&
+                               !(IsSpanFromArray(methodArg) && ConsumerWantsIl2CppSpans(original.CilMethodBody, bodyInstruction, ref branchTargets, globalContext, imports));
+                if (clrSpans)
+                {
+                    var spanFromArray = EmitSpanFromArray(target, bodyInstruction, methodArg, globalContext, imports);
+                    if (spanFromArray != null)
+                    {
+                        instructionMap.Add(bodyInstruction, spanFromArray);
+                        continue;
+                    }
+                }
+
                 var constrainedToClrStruct = targetBuilder.Count > 0
                     && targetBuilder[targetBuilder.Count - 1].OpCode == OpCodes.Constrained
                     && targetBuilder[targetBuilder.Count - 1].Operand is ITypeDefOrRef constrainedOperand && constrainedOperand.IsValueType();
@@ -269,26 +331,42 @@ public static class UnstripTranslator
                 }
 
                 var methodDeclarer =
-                    Pass80UnstripMethods.ResolveTypeInNewAssemblies(globalContext, methodArg.DeclaringType?.ToTypeSignature(), imports, useSystemCorlibType);
+                    Pass80UnstripMethods.ResolveTypeInNewAssemblies(globalContext, methodArg.DeclaringType?.ToTypeSignature(), imports, useSystemCorlibType, clrSpans);
                 if (methodDeclarer == null)
                     return false;
 
-                var newReturnType =
-                    Pass80UnstripMethods.ResolveTypeInNewAssemblies(globalContext, methodArg.Signature?.ReturnType, imports);
-                if (newReturnType == null)
+                var newMethodSignature = TranslateSignature(methodArg.Signature!, globalContext, imports, clrSpans);
+                if (newMethodSignature == null)
                     return false;
 
-                var newMethodSignature = methodArg.Signature!.HasThis
-                    ? MethodSignature.CreateInstance(newReturnType, methodArg.Signature.GenericParameterCount, [])
-                    : MethodSignature.CreateStatic(newReturnType, methodArg.Signature.GenericParameterCount, []);
-                foreach (var methodArgParameter in methodArg.Signature.ParameterTypes)
+                // A wrapper generated for a method il2cpp kept takes il2cpp spans, only rebuilt code takes CLR ones. A corlib
+                // static with neither, like string to ReadOnlySpan<char>, is a CLR corlib method.
+                if (clrSpans && (Pass80UnstripMethods.MentionsClrOnlyType(methodArg.Signature!.ReturnType) || methodArg.Signature.ParameterTypes.Any(Pass80UnstripMethods.MentionsClrOnlyType)))
                 {
-                    var newParamType = Pass80UnstripMethods.ResolveTypeInNewAssemblies(globalContext,
-                        methodArgParameter, imports);
-                    if (newParamType == null)
-                        return false;
+                    var generatedDeclarer = Pass80UnstripMethods.ResolveTypeInNewAssembliesRaw(globalContext, methodArg.DeclaringType?.ToTypeSignature(), imports, useSystemCorlibType);
+                    var il2cppSignature = TranslateSignature(methodArg.Signature, globalContext, imports, false);
+                    if (!DeclaresMethod(generatedDeclarer, methodArg.Name, newMethodSignature))
+                    {
+                        if (il2cppSignature != null && DeclaresMethod(generatedDeclarer, methodArg.Name, il2cppSignature))
+                            newMethodSignature = il2cppSignature;
+                        else if (!useSystemCorlibType && IsGeneratedCorlibType(generatedDeclarer))
+                            methodDeclarer = Pass80UnstripMethods.ResolveTypeInNewAssemblies(globalContext, methodArg.DeclaringType?.ToTypeSignature(), imports, true) ?? methodDeclarer;
+                    }
+                }
 
-                    newMethodSignature.ParameterTypes.Add(newParamType);
+                // Math only takes and returns primitives, and il2cpp strips most of it
+                if (methodArg.DeclaringType?.FullName is "System.Math" or "System.MathF" &&
+                    newMethodSignature.ParameterTypes.Append(newMethodSignature.ReturnType).All(it => it is CorLibTypeSignature))
+                    methodDeclarer = new TypeReference(imports.Module, imports.Module.CorLibTypeFactory.CorLibScope, "System", methodArg.DeclaringType.Name).ToTypeSignature(false);
+
+                // Generated wrappers return a plain ref where the caller marks a ref readonly with a modreq
+                if (newMethodSignature.ReturnType is CustomModifierTypeSignature { BaseType: ByReferenceTypeSignature } modified)
+                {
+                    var generatedDeclarer = Pass80UnstripMethods.ResolveTypeInNewAssembliesRaw(globalContext, methodArg.DeclaringType?.ToTypeSignature(), imports, useSystemCorlibType);
+                    var plain = TranslateSignature(methodArg.Signature, globalContext, imports, clrSpans)!;
+                    plain.ReturnType = modified.BaseType;
+                    if (!DeclaresMethod(generatedDeclarer, methodArg.Name, newMethodSignature) && DeclaresMethod(generatedDeclarer, methodArg.Name, plain))
+                        newMethodSignature = plain;
                 }
 
                 // The JIT faults on constrained. over a CLR struct followed by a call into an il2cpp class
@@ -452,6 +530,20 @@ public static class UnstripTranslator
             }
             else if (bodyInstruction.Operand is Parameter parameter)
             {
+                // A span passed on to a generated method stays the il2cpp object it came as
+                if (clrSpanParameters.TryGetValue(parameter.MethodSignatureIndex, out var spanLocal) &&
+                    !(bodyInstruction.OpCode.Code == CilCode.Ldarg && ConsumerWantsIl2CppSpans(original.CilMethodBody, bodyInstruction, ref branchTargets, globalContext, imports)))
+                {
+                    var opCode = bodyInstruction.OpCode.Code switch
+                    {
+                        CilCode.Ldarg => OpCodes.Ldloc,
+                        CilCode.Ldarga => OpCodes.Ldloca,
+                        _ => OpCodes.Stloc,
+                    };
+                    instructionMap.Add(bodyInstruction, targetBuilder.Add(opCode, spanLocal));
+                    continue;
+                }
+
                 var newInstruction = targetBuilder.Add(bodyInstruction.OpCode, target.Parameters.GetBySignatureIndex(parameter.MethodSignatureIndex));
                 instructionMap.Add(bodyInstruction, newInstruction);
             }
@@ -825,6 +917,273 @@ public static class UnstripTranslator
         cache = new FieldDefinition(name, FieldAttributes.Private | FieldAttributes.Static, module.UInt());
         owner.Fields.Add(cache);
         return cache;
+    }
+
+    private static MethodSignature? TranslateSignature(MethodSignature original, RewriteGlobalContext globalContext,
+        RuntimeAssemblyReferences imports, bool clrSpans)
+    {
+        var returnType = Pass80UnstripMethods.ResolveTypeInNewAssemblies(globalContext, original.ReturnType, imports, clrSpans: clrSpans);
+        if (returnType == null)
+            return null;
+
+        var signature = original.HasThis
+            ? MethodSignature.CreateInstance(returnType, original.GenericParameterCount, [])
+            : MethodSignature.CreateStatic(returnType, original.GenericParameterCount, []);
+        foreach (var parameter in original.ParameterTypes)
+        {
+            var parameterType = Pass80UnstripMethods.ResolveTypeInNewAssemblies(globalContext, parameter, imports, clrSpans: clrSpans);
+            if (parameterType == null)
+                return null;
+            signature.ParameterTypes.Add(parameterType);
+        }
+
+        return signature;
+    }
+
+    /// <summary>
+    ///     Check whether a generated type declares a method. Signatures compare by name because the declarer's methods
+    ///     live in another module than the signature.
+    /// </summary>
+    /// <param name="declarer">Declaring type as resolved before importing, so a generated type is its definition</param>
+    /// <param name="name">Method name</param>
+    /// <param name="signature">Translated signature</param>
+    /// <returns>Whether the method exists on the generated type</returns>
+    private static bool DeclaresMethod(TypeSignature? declarer, string? name, MethodSignature signature)
+    {
+        var type = GeneratedDefinition(declarer);
+        if (type == null)
+            return false;
+
+        return type.Methods.Any(method => method.Name == name && method.Signature != null &&
+            method.Signature.ParameterTypes.Count == signature.ParameterTypes.Count &&
+            method.Signature.ReturnType.FullName == signature.ReturnType.FullName &&
+            method.Signature.ParameterTypes.Select(it => it.FullName).SequenceEqual(signature.ParameterTypes.Select(it => it.FullName)));
+    }
+
+    private static TypeDefinition? GeneratedDefinition(TypeSignature? declarer) => declarer switch
+    {
+        GenericInstanceTypeSignature generic => generic.GenericType as TypeDefinition,
+        TypeDefOrRefSignature plain => plain.Type as TypeDefinition,
+        _ => null,
+    };
+
+    private static bool IsGeneratedCorlibType(TypeSignature? declarer) =>
+        GeneratedDefinition(declarer)?.DeclaringModule?.Assembly?.Name?.Value == "Il2Cppmscorlib";
+
+    /// <summary>
+    ///     Check whether a call pins a span, reads through a ref into one or uses MemoryMarshal. The il2cpp span
+    ///     wrappers have no counterpart for these.
+    /// </summary>
+    /// <param name="method">Called method in the Unity assemblies</param>
+    /// <returns>Whether the call needs CLR spans</returns>
+    private static bool NeedsClrSpanMember(IMethodDescriptor method)
+    {
+        var declaringSignature = method.DeclaringType?.ToTypeSignature();
+        var declaringName = declaringSignature is GenericInstanceTypeSignature instance ? instance.GenericType.FullName : declaringSignature?.FullName;
+        if (!Pass80UnstripMethods.IsClrOnlyCorlibType(declaringName))
+            return false;
+
+        return declaringName == "System.Runtime.InteropServices.MemoryMarshal" || method.Name == "GetPinnableReference" ||
+               method.Signature?.ReturnType is ByReferenceTypeSignature ||
+               method.Signature?.ReturnType is CustomModifierTypeSignature { BaseType: ByReferenceTypeSignature };
+    }
+
+    private static bool IsSpanFromArray(IMethodDescriptor method)
+    {
+        var declaringSignature = method.DeclaringType?.ToTypeSignature();
+        var declaringName = declaringSignature is GenericInstanceTypeSignature instance ? instance.GenericType.FullName : declaringSignature?.FullName;
+        return method.Signature?.ParameterTypes.Count == 1 && method.Signature.ParameterTypes[0] is SzArrayTypeSignature &&
+               (declaringName is "System.Span`1" or "System.ReadOnlySpan`1" && method.Name?.Value is ".ctor" or "op_Implicit" ||
+                declaringName == "System.MemoryExtensions" && method.Name == "AsSpan");
+    }
+
+    /// <summary>
+    ///     Check whether the value an instruction pushes goes to a generated method that only exists with il2cpp spans
+    /// </summary>
+    /// <param name="body">Original method body</param>
+    /// <param name="instruction">Instruction pushing the value</param>
+    /// <param name="branchTargets">Branch targets of the body, collected on first use</param>
+    /// <param name="globalContext">Rewrite context</param>
+    /// <param name="imports">Runtime references of the target module</param>
+    /// <returns>Whether the value has to stay an il2cpp span</returns>
+    private static bool ConsumerWantsIl2CppSpans(CilMethodBody body, CilInstruction instruction, ref HashSet<CilInstruction>? branchTargets,
+        RewriteGlobalContext globalContext, RuntimeAssemblyReferences imports)
+    {
+        branchTargets ??= CollectBranchTargets(body);
+        var consumer = FindConsumer(body, instruction, branchTargets, out var argument);
+        if (consumer?.Operand is not IMethodDescriptor next || next.Signature == null ||
+            consumer.OpCode.Code is not (CilCode.Call or CilCode.Callvirt or CilCode.Newobj))
+            return false;
+
+        var parameter = argument - (next.Signature.HasThis && consumer.OpCode.Code != CilCode.Newobj ? 1 : 0);
+        if (parameter < 0 || !Pass80UnstripMethods.MentionsClrOnlyType(next.Signature.ParameterTypes[parameter]))
+            return false;
+
+        var declarer = Pass80UnstripMethods.ResolveTypeInNewAssembliesRaw(globalContext, next.DeclaringType?.ToTypeSignature(), imports, next.Signature.HasThis);
+        var clrSignature = TranslateSignature(next.Signature, globalContext, imports, true);
+        var il2cppSignature = TranslateSignature(next.Signature, globalContext, imports, false);
+        return clrSignature != null && il2cppSignature != null &&
+               !DeclaresMethod(declarer, next.Name, clrSignature) && DeclaresMethod(declarer, next.Name, il2cppSignature);
+    }
+
+    /// <summary>
+    ///     Find the instruction that pops the value another instruction pushes
+    /// </summary>
+    /// <param name="body">Method body</param>
+    /// <param name="producer">Instruction pushing one value</param>
+    /// <param name="branchTargets">Branch targets of the body</param>
+    /// <param name="position">Position of the value among the ones the consumer pops</param>
+    /// <returns>Consuming instruction, or null when a branch comes first</returns>
+    private static CilInstruction? FindConsumer(CilMethodBody body, CilInstruction producer, HashSet<CilInstruction> branchTargets, out int position)
+    {
+        position = -1;
+        if (producer.GetStackPushCount() != 1)
+            return null;
+
+        var instructions = body.Instructions;
+        var depth = 1;
+        for (var i = instructions.IndexOf(producer) + 1; i < instructions.Count; i++)
+        {
+            var current = instructions[i];
+            // From a branch target on the stack can come from more than one path
+            if (branchTargets.Contains(current))
+                return null;
+
+            var popped = current.GetStackPopCount(body);
+            if (popped >= depth)
+            {
+                position = popped - depth;
+                return current;
+            }
+
+            if (current.OpCode.FlowControl is not (CilFlowControl.Next or CilFlowControl.Call))
+                return null;
+            depth += current.GetStackPushCount() - popped;
+        }
+
+        return null;
+    }
+
+    /// <summary>
+    ///     Emit a CLR span local for every span parameter. The parameter keeps its il2cpp type and the local views
+    ///     the same memory.
+    /// </summary>
+    /// <param name="original">Method in the Unity assemblies</param>
+    /// <param name="target">Generated method being filled</param>
+    /// <param name="globalContext">Rewrite context</param>
+    /// <param name="imports">Runtime references of the target module</param>
+    /// <returns>Locals by parameter signature index, or null for a span parameter that cannot convert</returns>
+    private static Dictionary<int, CilLocalVariable>? EmitClrSpanParameters(MethodDefinition original, MethodDefinition target,
+        RewriteGlobalContext globalContext, RuntimeAssemblyReferences imports)
+    {
+        Dictionary<int, CilLocalVariable> locals = [];
+        var module = imports.Module;
+        foreach (var parameter in original.Parameters)
+        {
+            if (!Pass80UnstripMethods.MentionsClrOnlyType(parameter.ParameterType))
+                continue;
+            if (parameter.ParameterType is not GenericInstanceTypeSignature spanType ||
+                spanType.GenericType.FullName is not ("System.Span`1" or "System.ReadOnlySpan`1"))
+                return null;
+
+            var elementType = Pass80UnstripMethods.ResolveTypeInNewAssemblies(globalContext, spanType.TypeArguments[0], imports);
+            var clrSpanType = Pass80UnstripMethods.ResolveTypeInNewAssemblies(globalContext, spanType, imports, clrSpans: true);
+            if (elementType == null || !elementType.IsValueType || clrSpanType == null)
+                return null;
+
+            var helpers = new TypeReference(module, imports.Il2CppStructArray.ToTypeDefOrRef().Scope, "Il2CppInterop.Runtime.InteropTypes", "Il2CppSpans");
+            var returnShape = new GenericInstanceTypeSignature(((GenericInstanceTypeSignature)clrSpanType).GenericType, true,
+                [new GenericParameterSignature(GenericParameterType.Method, 0)]);
+            var convert = new MemberReference(helpers, spanType.GenericType.Name == "Span`1" ? "ToSpan" : "ToReadOnlySpan",
+                MethodSignature.CreateStatic(returnShape, 1, [imports.Il2CppObjectBase]));
+
+            var local = new CilLocalVariable(clrSpanType);
+            target.CilMethodBody!.LocalVariables.Add(local);
+            var instructions = target.CilMethodBody.Instructions;
+            instructions.Add(OpCodes.Ldarg, target.Parameters.GetBySignatureIndex(parameter.MethodSignatureIndex));
+            instructions.Add(OpCodes.Call, module.DefaultImporter.ImportMethod(convert.MakeGenericInstanceMethod([elementType])));
+            instructions.Add(OpCodes.Stloc, local);
+            locals.Add(parameter.MethodSignatureIndex, local);
+        }
+
+        return locals;
+    }
+
+    /// <summary>
+    ///     Emit a CLR span over an array for a span constructor or AsSpan call. A rebuilt array is an il2cpp struct
+    ///     array, whose memory il2cpp never moves.
+    /// </summary>
+    /// <param name="target">Generated method being filled</param>
+    /// <param name="instruction">Original call instruction</param>
+    /// <param name="method">Called method in the Unity assemblies</param>
+    /// <param name="globalContext">Rewrite context</param>
+    /// <param name="imports">Runtime references of the target module</param>
+    /// <returns>First emitted instruction, or null when the call is not a span over a struct array</returns>
+    private static CilInstruction? EmitSpanFromArray(MethodDefinition target, CilInstruction instruction, IMethodDescriptor method,
+        RewriteGlobalContext globalContext, RuntimeAssemblyReferences imports)
+    {
+        // A generic instance's full name carries its arguments, the definition's name is what identifies it
+        var declaringSignature = method.DeclaringType?.ToTypeSignature();
+        var declaringName = declaringSignature is GenericInstanceTypeSignature instance ? instance.GenericType.FullName : declaringSignature?.FullName;
+        var signature = method.Signature;
+        if (signature == null || signature.ParameterTypes.Count != 1 || signature.ParameterTypes[0] is not SzArrayTypeSignature)
+            return null;
+
+        TypeSignature? elementSource;
+        bool readOnly;
+        var isConstructor = method.Name == ".ctor";
+        if (declaringName is "System.Span`1" or "System.ReadOnlySpan`1" && (isConstructor || method.Name == "op_Implicit"))
+        {
+            if (method.DeclaringType!.ToTypeSignature() is not GenericInstanceTypeSignature spanType)
+                return null;
+            elementSource = spanType.TypeArguments[0];
+            readOnly = declaringName == "System.ReadOnlySpan`1";
+        }
+        else if (declaringName == "System.MemoryExtensions" && method.Name == "AsSpan" && method is MethodSpecification specification &&
+                 specification.Signature?.TypeArguments.Count == 1)
+        {
+            elementSource = specification.Signature.TypeArguments[0];
+            readOnly = false;
+        }
+        else
+        {
+            return null;
+        }
+
+        var elementType = Pass80UnstripMethods.ResolveTypeInNewAssemblies(globalContext, elementSource, imports);
+        if (elementType == null || !elementType.IsValueType)
+            return null;
+
+        // A call to the constructor initializes a span at an address already on the stack, newobj pushes a new one
+        if (isConstructor && instruction.OpCode != OpCodes.Newobj && instruction.OpCode != OpCodes.Call)
+            return null;
+
+        var module = imports.Module;
+        var structArray = imports.Il2CppStructArray.MakeGenericInstanceType(elementType);
+        var span = new TypeReference(module, module.CorLibTypeFactory.CorLibScope, "System", "Span`1");
+        var spanOfElement = new GenericInstanceTypeSignature(span, true, [elementType]);
+        var spanOfParameter = new GenericInstanceTypeSignature(span, true, [new GenericParameterSignature(GenericParameterType.Type, 0)]);
+        var asSpan = new MemberReference(structArray.ToTypeDefOrRef(), "AsSpan", MethodSignature.CreateInstance(spanOfParameter));
+
+        var instructions = target.CilMethodBody!.Instructions;
+        var first = instructions.Add(OpCodes.Castclass, module.DefaultImporter.ImportType(structArray.ToTypeDefOrRef()));
+        instructions.Add(OpCodes.Call, module.DefaultImporter.ImportMethod(asSpan));
+
+        TypeSignature result = spanOfElement;
+        if (readOnly)
+        {
+            var readOnlySpan = new TypeReference(module, module.CorLibTypeFactory.CorLibScope, "System", "ReadOnlySpan`1");
+            var readOnlyOfParameter = new GenericInstanceTypeSignature(readOnlySpan, true, [new GenericParameterSignature(GenericParameterType.Type, 0)]);
+            var toReadOnly = new MemberReference(spanOfElement.ToTypeDefOrRef(), "op_Implicit",
+                MethodSignature.CreateStatic(readOnlyOfParameter, [spanOfParameter]));
+            instructions.Add(OpCodes.Call, module.DefaultImporter.ImportMethod(toReadOnly));
+            result = new GenericInstanceTypeSignature(readOnlySpan, true, [elementType]);
+        }
+
+        if (isConstructor && instruction.OpCode == OpCodes.Call)
+            instructions.Add(OpCodes.Stobj, module.DefaultImporter.ImportType(result.ToTypeDefOrRef()));
+
+        return first;
     }
 
     private static bool HasIl2CppClass(TypeDefinition type, RewriteGlobalContext globalContext)

@@ -398,6 +398,9 @@ public static class ILGeneratorEx
         {
             Debug.Assert(convertedReturnType.IsPointerLike());
             body.Add(OpCodes.Ldloc, pointerVariable);
+            // il2cpp_runtime_invoke boxes a copy of the struct a ref return points at
+            if (unboxValueType && originalReturnType is ByReferenceTypeSignature byRef && byRef.BaseType.IsValueType())
+                body.Add(OpCodes.Call, imports.IL2CPP_il2cpp_object_unbox.Value);
         }
         else if (originalReturnType.IsValueType())
         {

@@ -358,7 +358,8 @@ public static class Pass50GenerateMethods
         else if (!returnType.IsValueType() && returnType.ElementType != ElementType.Void)
         {
             body.Add(OpCodes.Stloc, resultVar);
-            body.EmitPointerToObject(returnType, newMethod.Signature!.ReturnType, typeContext, resultVar, false, true);
+            // A direct call returns the real address of a ref, not a box
+            body.EmitPointerToObject(returnType, newMethod.Signature!.ReturnType, typeContext, resultVar, false, false);
         }
 
         body.Add(OpCodes.Ret);

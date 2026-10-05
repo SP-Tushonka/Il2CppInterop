@@ -51,18 +51,17 @@ public static class PassSptBridgeSystemInterfaces
         var type = typeContext.NewType;
         var module = type.DeclaringModule!;
 
-        var pairs = new List<(MethodDefinition? Target, MethodInfo System)>();
+        var pairs = new List<(MethodDefinition? Target, MethodInfo System, bool Stripped)>();
         foreach (var name in bridge.Methods)
         {
-            var system = bridge.SystemType.GetMethod(name, BindingFlags.Public | BindingFlags.Instance);
+            var system = bridge.SystemType.GetMethod(name, BindingFlags.Public | BindingFlags.Instance)!;
             // il2cpp's CopyTo takes an il2cpp array, the System one a managed array, so it always gets the enumerator body
             var target = name == "CopyTo" ? null : typeContext.TryGetMethodByName(name)?.NewMethod;
-            if (system == null || (target == null && name != "CopyTo") || (target != null && !ParametersMatch(module, target, system)))
-            {
-                Logger.Instance.LogWarning("{Type} has no matching {Method}, it keeps no System interface", bridge.Il2CppType, name);
-                return;
-            }
-            pairs.Add((target, system));
+            // Interfaces extending this one need the bridge to load, so a member il2cpp stripped throws instead
+            var stripped = name != "CopyTo" && (target == null || !ParametersMatch(module, target, system));
+            if (stripped)
+                Logger.Instance.LogInformation("{Type} has no matching {Method}, its System counterpart throws", bridge.Il2CppType, name);
+            pairs.Add((target, system, stripped));
         }
 
         var systemType = module.DefaultImporter.ImportType(bridge.SystemType);
@@ -72,7 +71,7 @@ public static class PassSptBridgeSystemInterfaces
         type.Interfaces.Add(new InterfaceImplementation(systemRef));
 
         var systemName = bridge.SystemType.FullName!.Split('`')[0];
-        foreach (var (target, system) in pairs)
+        foreach (var (target, system, stripped) in pairs)
         {
             var imported = module.DefaultImporter.ImportMethod(system);
             var signature = (MethodSignature)imported.Signature!;
@@ -83,7 +82,9 @@ public static class PassSptBridgeSystemInterfaces
                 MethodSignature.CreateInstance(signature.ReturnType, signature.ParameterTypes.ToArray()));
             forwarder.CilMethodBody = new();
 
-            if (target == null)
+            if (stripped)
+                EmitThrow(module, forwarder, $"il2cpp stripped {bridge.Il2CppType}.{system.Name}");
+            else if (target == null)
                 EmitCopyTo(context, forwarder);
             else
                 EmitForward(typeContext, forwarder, target);
@@ -91,6 +92,20 @@ public static class PassSptBridgeSystemInterfaces
             type.Methods.Add(forwarder);
             type.MethodImplementations.Add(new MethodImplementation(module.DefaultImporter.ImportMethod(declaration), forwarder));
         }
+    }
+
+    /// <summary>
+    ///     Emit a body that throws <see cref="NotSupportedException"/>
+    /// </summary>
+    /// <param name="module">Module of the forwarder</param>
+    /// <param name="forwarder">Method to fill</param>
+    /// <param name="message">Exception message</param>
+    private static void EmitThrow(ModuleDefinition module, MethodDefinition forwarder, string message)
+    {
+        var body = forwarder.CilMethodBody!.Instructions;
+        body.Add(CilOpCodes.Ldstr, message);
+        body.Add(CilOpCodes.Newobj, module.DefaultImporter.ImportMethod(typeof(NotSupportedException).GetConstructor([typeof(string)])!));
+        body.Add(CilOpCodes.Throw);
     }
 
     // The forwarder passes its arguments through untouched, so the il2cpp method has to take the same types

@@ -1631,7 +1631,7 @@ public static unsafe partial class ClassInjector
             {
                 body.Emit(OpCodes.Ldloc, variable);
                 body.Emit(OpCodes.Ldarg_S, i + argumentOffset);
-                body.Emit(OpCodes.Call, TrampolineHelpers.CopyBoxedStructToMethod);
+                TrampolineHelpers.EmitCopyBoxedStructTo(body, managedParameters[i]);
                 continue;
             }
             body.Emit(OpCodes.Ldarg_S, i + argumentOffset);

@@ -73,13 +73,20 @@ internal static class TrampolineHelpers
         return box;
     }
 
-    // The byref can point into a heap object, so references in the struct go through the write barrier
-    internal static void CopyBoxedStructTo(Il2CppObjectBase box, IntPtr data)
+    // The byref can point into a heap object, so references in the struct go through the write barrier. The size comes
+    // from the declared class, a Nullable<T> box reports only its T.
+    internal static void CopyBoxedStructTo(Il2CppObjectBase box, IntPtr data, IntPtr klass)
     {
         if (box == null) return;
 
-        var pointer = box.Pointer;
-        IL2CPP.CopyValue(IntPtr.Zero, data, IL2CPP.il2cpp_object_unbox(pointer), IL2CPP.il2cpp_object_get_class(pointer));
+        IL2CPP.CopyValue(IntPtr.Zero, data, IL2CPP.il2cpp_object_unbox(box.Pointer), klass);
+    }
+
+    internal static void EmitCopyBoxedStructTo(ILGenerator il, Type byRefType)
+    {
+        il.Emit(OpCodes.Ldc_I8, Il2CppClassPointerStore.GetNativeClassPointer(byRefType.GetElementType()!).ToInt64());
+        il.Emit(OpCodes.Conv_I);
+        il.Emit(OpCodes.Call, CopyBoxedStructToMethod);
     }
 
     internal static readonly MethodInfo BoxStructAtMethod = typeof(TrampolineHelpers).GetMethod(nameof(BoxStructAt), BindingFlags.Static | BindingFlags.NonPublic)!;
@@ -97,6 +104,12 @@ internal static class TrampolineHelpers
                 return typeof(byte).MakeByRefType();
             }
 
+            // Marshalling would turn char into a one byte ANSI character
+            if (directType == typeof(char))
+            {
+                return typeof(ushort).MakeByRefType();
+            }
+
             if (directType == typeof(string) || directType.IsSubclassOf(typeof(Il2CppObjectBase)) || directType.IsInterface)
             {
                 return typeof(IntPtr*);
@@ -104,7 +117,15 @@ internal static class TrampolineHelpers
         }
         else if (managedType.IsSubclassOf(typeof(Il2CppSystem.ValueType)) && IsPassedByValue(managedType))
         {
-            return GetFixedSizeStructType(ValueSize(managedType));
+            // A struct with no fields loses bytes on the way through a trampoline, a register sized one travels as an integer
+            return ValueSize(managedType) switch
+            {
+                1 => typeof(byte),
+                2 => typeof(ushort),
+                4 => typeof(uint),
+                8 => typeof(ulong),
+                var size => GetFixedSizeStructType(size)
+            };
         }
         else if (managedType == typeof(string) || managedType.IsSubclassOf(typeof(Il2CppObjectBase)) || managedType.IsInterface) // General reference type
         {
@@ -114,6 +135,10 @@ internal static class TrampolineHelpers
         {
             // bool is byte in Il2Cpp, but int in CLR => force size to be correct
             return typeof(byte);
+        }
+        else if (managedType == typeof(char))
+        {
+            return typeof(ushort);
         }
 
         return managedType;

@@ -352,7 +352,7 @@ internal unsafe class Il2CppDetourMethodPatcher : MethodPatcher
             {
                 il.Emit(OpCodes.Ldloc, indirectVariables[i]);
                 il.Emit(OpCodes.Ldarg_S, i + paramStartIndex);
-                il.Emit(OpCodes.Call, TrampolineHelpers.CopyBoxedStructToMethod);
+                TrampolineHelpers.EmitCopyBoxedStructTo(il, managedParams[i]);
                 continue;
             }
 
@@ -474,34 +474,14 @@ internal unsafe class Il2CppDetourMethodPatcher : MethodPatcher
         {
             var classPtr = Il2CppClassPointerStore.GetNativeClassPointer(managedParamType);
 
-            // il2cpp_value_box uses .NET boxing semantics which boxes Nullable<T> as just T,
-            // losing the HasValue field. Manually box Nullable<T> to preserve full data.
-            bool isNullable = managedParamType.IsGenericType &&
-                managedParamType.GetGenericTypeDefinition().FullName == "Il2CppSystem.Nullable`1";
-
-            if (isNullable)
-            {
-                il.Emit(OpCodes.Ldc_I8, classPtr.ToInt64());
-                il.Emit(OpCodes.Conv_I);
-                il.Emit(OpCodes.Call, AccessTools.Method(typeof(IL2CPP), nameof(IL2CPP.il2cpp_object_new)));
-                var objLocal = il.DeclareLocal(typeof(IntPtr));
-                il.Emit(OpCodes.Stloc, objLocal);
-                il.Emit(TrampolineHelpers.IsPassedByValue(managedParamType) ? OpCodes.Ldarga_S : OpCodes.Ldarg, argIndex);
-                il.Emit(OpCodes.Ldloc, objLocal);
-                il.Emit(OpCodes.Call, AccessTools.Method(typeof(Il2CppDetourMethodPatcher), nameof(CopyIntoBox)));
-                il.Emit(OpCodes.Ldloc, objLocal);
-            }
-            else
-            {
-                // Box struct into object first before conversion
-                il.Emit(OpCodes.Ldc_I8, classPtr.ToInt64());
-                il.Emit(OpCodes.Conv_I);
-                // We don't handle byref structs on x86 yet but we're yet to encounter those
-                il.Emit(TrampolineHelpers.IsPassedByValue(managedParamType) ? OpCodes.Ldarga_S : OpCodes.Ldarg, argIndex);
-                il.Emit(OpCodes.Call,
-                    AccessTools.Method(typeof(IL2CPP),
-                        nameof(IL2CPP.il2cpp_value_box)));
-            }
+            // Box struct into object first before conversion
+            il.Emit(OpCodes.Ldc_I8, classPtr.ToInt64());
+            il.Emit(OpCodes.Conv_I);
+            // We don't handle byref structs on x86 yet but we're yet to encounter those
+            il.Emit(TrampolineHelpers.IsPassedByValue(managedParamType) ? OpCodes.Ldarga_S : OpCodes.Ldarg, argIndex);
+            // il2cpp boxes a Nullable<T> as just its T, even a box from il2cpp_object_new reports the T class
+            il.Emit(OpCodes.Call, AccessTools.Method(typeof(IL2CPP),
+                IL2CPP.IsIl2CppNullable(managedParamType) ? nameof(IL2CPP.BoxNullable) : nameof(IL2CPP.il2cpp_value_box)));
         }
         else
         {
@@ -579,8 +559,4 @@ internal unsafe class Il2CppDetourMethodPatcher : MethodPatcher
             HandleTypeConversion(managedParamType);
         }
     }
-
-    // The new box is heap memory, so a Nullable carrying a reference has to go through the write barrier
-    private static void CopyIntoBox(IntPtr source, IntPtr box) =>
-        IL2CPP.CopyValue(box, IL2CPP.il2cpp_object_unbox(box), source, IL2CPP.il2cpp_object_get_class(box));
 }

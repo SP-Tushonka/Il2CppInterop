@@ -1261,12 +1261,12 @@ public static class UnstripTranslator
         return targets;
     }
 
-    public static void ReplaceBodyWithException(MethodDefinition newMethod, RuntimeAssemblyReferences imports)
+    public static void ReplaceBodyWithException(MethodDefinition newMethod, RuntimeAssemblyReferences imports, string message = "Method unstripping failed")
     {
         newMethod.CilMethodBody = new();
         var processor = newMethod.CilMethodBody.Instructions;
 
-        processor.Add(OpCodes.Ldstr, "Method unstripping failed");
+        processor.Add(OpCodes.Ldstr, message);
         processor.Add(OpCodes.Newobj, imports.Module.NotSupportedExceptionCtor());
         processor.Add(OpCodes.Throw);
         processor.Add(OpCodes.Ret);

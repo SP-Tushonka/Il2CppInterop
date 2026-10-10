@@ -38,8 +38,11 @@ public static class Pass80UnstripMethods
                     var plainStruct = processedType.ComputedTypeSpecifics == TypeRewriteContext.TypeSpecifics.BlittableStruct
                         || (processedType.OriginalType == null && processedType.NewType.IsValueType);
                     if (unityMethod.IsConstructor && (unityMethod.IsStatic || (!plainStruct && !classConstructor))) continue;
-                    if (unityMethod.IsAbstract) continue;
-                    if (!unityMethod.HasMethodBody && !isICall) continue; // CoreCLR chokes on no-body methods
+                    // An abstract method is restored so callers in the base class compile. It stays virtual with a
+                    // throwing body, a truly abstract one would stop every subclass missing its override from loading
+                    var isAbstract = unityMethod.IsAbstract;
+                    if (isAbstract && unityType.IsInterface) continue;
+                    if (!unityMethod.HasMethodBody && !isICall && !isAbstract) continue; // CoreCLR chokes on no-body methods
 
                     var processedMethod = processedType.TryGetMethodByUnityAssemblyMethod(unityMethod);
                     if (processedMethod != null) continue;
@@ -57,6 +60,7 @@ public static class Pass80UnstripMethods
                     // whenever the wrapper is collected, so it stays a plain method like the native ones
                     if (unityMethod.Name == "Finalize" && !unityMethod.IsStatic && unityMethod.Parameters.Count == 0)
                         newAttributes &= ~(MethodAttributes.Virtual | MethodAttributes.NewSlot | MethodAttributes.Final);
+                    newAttributes &= ~MethodAttributes.Abstract;
                     var newMethod = new MethodDefinition(unityMethod.Name,
                         newAttributes,
                         MethodSignatureCreator.CreateMethodSignature(newAttributes, returnType, unityMethod.Signature.GenericParameterCount));
@@ -112,6 +116,11 @@ public static class Pass80UnstripMethods
                             delegateType, unityMethod, imports);
                         UnstripGenerator.GenerateInvokerMethodBody(newMethod, delegateField, delegateType,
                             processedType, imports);
+                    }
+                    else if (isAbstract)
+                    {
+                        UnstripTranslator.ReplaceBodyWithException(newMethod, imports, "Abstract method without an override");
+                        processedType.NewType.Methods.Add(newMethod);
                     }
                     else
                     {

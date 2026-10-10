@@ -92,7 +92,10 @@ public static class UnstripTranslator
 
         var targetBuilder = target.CilMethodBody.Instructions;
 
-        var classConstructor = original.IsConstructor && !original.IsStatic && target.DeclaringType != null && !target.DeclaringType.IsValueType();
+        var managedType = target.DeclaringType != null && !target.DeclaringType.IsValueType() && IsManagedOnly(target.DeclaringType);
+        var instanceConstructor = original.IsConstructor && !original.IsStatic && target.DeclaringType != null && !target.DeclaringType.IsValueType();
+        var managedConstructor = instanceConstructor && managedType;
+        var classConstructor = instanceConstructor && !managedConstructor;
         LastFailure = "object allocation, neither the class nor its base exists in il2cpp";
         if (classConstructor && !EmitObjectAllocation(target, globalContext, imports))
             return false;
@@ -312,6 +315,15 @@ public static class UnstripTranslator
                     instructionMap.Add(bodyInstruction, clrInstruction);
                     continue;
                 }
+                // System.Object maps to Il2CppSystem.Object, a plain managed class chains to the CLR one
+                if (managedConstructor && bodyInstruction.OpCode.Code == CilCode.Call && methodArg.Name == ".ctor"
+                    && methodArg.DeclaringType?.FullName == "System.Object")
+                {
+                    var objectConstructor = ReferenceCreator.CreateInstanceMethodReference(".ctor", imports.Module.Void(), imports.Module.Object().ToTypeDefOrRef());
+                    instructionMap.Add(bodyInstruction, targetBuilder.Add(OpCodes.Call, imports.Module.DefaultImporter.ImportMethod(objectConstructor)));
+                    continue;
+                }
+
                 if (classConstructor && bodyInstruction.OpCode.Code == CilCode.Call && methodArg.Name == ".ctor" && methodArg.Signature is { HasThis: true })
                 {
                     // The object already exists, so a chained base(...) or this(...) runs on it instead of allocating another
@@ -329,6 +341,16 @@ public static class UnstripTranslator
                         return false;
 
                     instructionMap.Add(bodyInstruction, chainInstruction);
+                    continue;
+                }
+
+                // A plain managed class is a CLR object, so its finalizer bookkeeping belongs to the CLR GC
+                if (managedType && methodArg.DeclaringType?.FullName == "System.GC" && methodArg.Name?.Value is "SuppressFinalize" or "ReRegisterForFinalize" or "KeepAlive"
+                    && methodArg.Signature is { HasThis: false } && methodArg.Signature.ParameterTypes.Count == 1)
+                {
+                    var clrGc = ReferenceCreator.CreateStaticMethodReference(methodArg.Name, imports.Module.Void(),
+                        imports.Module.ImportCorlibReference("System.GC").ToTypeDefOrRef(), imports.Module.Object());
+                    instructionMap.Add(bodyInstruction, targetBuilder.Add(OpCodes.Call, imports.Module.DefaultImporter.ImportMethod(clrGc)));
                     continue;
                 }
 
@@ -731,6 +753,26 @@ public static class UnstripTranslator
         instructions.Add(OpCodes.Ldloc, indexLocal);
         instructions.Add(OpCodes.Call, module.DefaultImporter.ImportMethod(getItem));
         return first;
+    }
+
+    /// <summary>
+    /// Check whether a type was rebuilt as a plain managed class. A class il2cpp stripped together with every base up
+    /// to System.Object has no il2cpp object behind it, so its constructors are ordinary managed constructors
+    /// </summary>
+    /// <param name="type">Generated type</param>
+    /// <returns>True when no base is an il2cpp wrapper</returns>
+    private static bool IsManagedOnly(TypeDefinition type)
+    {
+        for (TypeDefinition? current = type; current != null; current = current.BaseType?.Resolve())
+        {
+            var baseType = current.BaseType?.FullName;
+            if (baseType == "System.Object")
+                return true;
+            if (baseType == null || baseType == "Il2CppInterop.Runtime.InteropTypes.Il2CppObjectBase")
+                return false;
+        }
+
+        return false;
     }
 
     /// <summary>

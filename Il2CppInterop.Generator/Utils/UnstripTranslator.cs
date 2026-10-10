@@ -1303,15 +1303,23 @@ public static class UnstripTranslator
         return targets;
     }
 
-    public static void ReplaceBodyWithException(MethodDefinition newMethod, RuntimeAssemblyReferences imports, string message = "Method unstripping failed")
+    public static void ReplaceBodyWithException(MethodDefinition newMethod, RuntimeAssemblyReferences imports, string? reason = null)
     {
         newMethod.CilMethodBody = new();
         var processor = newMethod.CilMethodBody.Instructions;
 
+        // A modder sees only this text, so it names the method and why it cannot run
+        var message = $"{Describe(newMethod)} {reason ?? "was stripped from this game and could not be rebuilt from Unity's own code. The game never calls it, use another way to do the same thing"}";
         processor.Add(OpCodes.Ldstr, message);
         processor.Add(OpCodes.Newobj, imports.Module.NotSupportedExceptionCtor());
         processor.Add(OpCodes.Throw);
         processor.Add(OpCodes.Ret);
+    }
+
+    private static string Describe(MethodDefinition method)
+    {
+        var parameters = string.Join(", ", method.Signature?.ParameterTypes.Select(type => type.Name) ?? []);
+        return $"{method.DeclaringType?.FullName}.{method.Name}({parameters})";
     }
 
     //Required for deconstruction on net472

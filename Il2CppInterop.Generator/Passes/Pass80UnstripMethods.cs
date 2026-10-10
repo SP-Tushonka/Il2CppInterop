@@ -119,7 +119,7 @@ public static class Pass80UnstripMethods
                     }
                     else if (isAbstract)
                     {
-                        UnstripTranslator.ReplaceBodyWithException(newMethod, imports, "Abstract method without an override");
+                        UnstripTranslator.ReplaceBodyWithException(newMethod, imports, "is abstract and was stripped from this game, there is no override to call");
                         processedType.NewType.Methods.Add(newMethod);
                     }
                     else

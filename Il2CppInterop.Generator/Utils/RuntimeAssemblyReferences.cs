@@ -39,6 +39,8 @@ public class RuntimeAssemblyReferences
     public Lazy<IMethodDefOrRef> IL2CPP_ManagedStringToIl2Cpp { get; private set; }
     public Lazy<IMethodDefOrRef> Il2CppObjectBase_Cast { get; private set; }
     public Lazy<IMethodDefOrRef> Il2CppObjectBase_TryCast { get; private set; }
+    public Lazy<IMethodDefOrRef> IL2CPP_CastOrNull { get; private set; }
+    public Lazy<IMethodDefOrRef> IL2CPP_TryCastOrNull { get; private set; }
     public Lazy<IMethodDefOrRef> Il2CppObjectPool_Get { get; private set; }
     public Lazy<IMethodDefOrRef> IL2CPP_ResolveICall { get; private set; }
     public Lazy<IMethodDefOrRef> IL2CPP_il2cpp_gc_wbarrier_set_field { get; private set; }
@@ -98,9 +100,9 @@ public class RuntimeAssemblyReferences
     public TypeSignature RuntimeReflectionHelper { get; private set; }
     public TypeSignature DelegateSupport { get; private set; }
     public TypeSignature Il2CppException { get; private set; }
+    public TypeSignature Il2CppMirroredAttribute { get; private set; }
 #nullable enable
     private TypeSignature ResolveType(string typeName)
-    public TypeSignature Il2CppMirroredAttribute { get; private set; }
     {
         return allTypes[typeName];
     }
@@ -154,10 +156,10 @@ public class RuntimeAssemblyReferences
 
         Il2CppException = new TypeReference(Module, assemblyRef, "Il2CppInterop.Runtime", "Il2CppException").ToTypeSignature();
 
-        allTypes["Il2CppInterop.Runtime.InteropTypes.Il2CppObjectBase"] = Il2CppObjectBase;
-        allTypes["Il2CppInterop.Runtime.InteropTypes.IIl2CppObjectBase"] = IIl2CppObjectBase;
         Il2CppMirroredAttribute = new TypeReference(Module, assemblyRef, "Il2CppInterop.Runtime.Attributes", "Il2CppMirroredAttribute").ToTypeSignature();
 
+        allTypes["Il2CppInterop.Runtime.InteropTypes.Il2CppObjectBase"] = Il2CppObjectBase;
+        allTypes["Il2CppInterop.Runtime.InteropTypes.IIl2CppObjectBase"] = IIl2CppObjectBase;
         allTypes["Il2CppInterop.Runtime.Runtime.Il2CppObjectPool"] = Il2CppObjectPool;
         allTypes["Il2CppInterop.Runtime.InteropTypes.Arrays.Il2CppArrayBase"] = nonGenericIl2CppArrayBase;
         allTypes["Il2CppInterop.Runtime.InteropTypes.Arrays.Il2CppArrayBase<T>"] = genericIl2CppArrayBase;
@@ -166,6 +168,14 @@ public class RuntimeAssemblyReferences
         allTypes["Il2CppInterop.Runtime.InteropTypes.Arrays.Il2CppStructArray<T>"] = Il2CppStructArray;
         allTypes["Il2CppInterop.Runtime.Il2CppException"] = Il2CppException;
         allTypes["Il2CppInterop.Runtime.IL2CPP"] = Il2Cpp;
+    }
+
+    // IL2CPP.CastOrNull<T>(Il2CppObjectBase) and TryCastOrNull<T>, static so a null value needs no instance call
+    private MemberReference StaticCastHelper(string name)
+    {
+        var gp0 = new GenericParameterSignature(GenericParameterType.Method, 0);
+        var signature = MethodSignature.CreateStatic(gp0, 1, [ResolveType("Il2CppInterop.Runtime.InteropTypes.Il2CppObjectBase")]);
+        return new MemberReference(ResolveType("Il2CppInterop.Runtime.IL2CPP").ToTypeDefOrRef(), name, signature);
     }
 
     private void InitMethodRefs()
@@ -545,6 +555,9 @@ public class RuntimeAssemblyReferences
             var mr = new MemberReference(ResolveType("Il2CppInterop.Runtime.IL2CPP").ToTypeDefOrRef(), "PointerToValueGeneric", signature);
             return mr;
         });
+
+        IL2CPP_CastOrNull = new Lazy<IMethodDefOrRef>(() => StaticCastHelper("CastOrNull"));
+        IL2CPP_TryCastOrNull = new Lazy<IMethodDefOrRef>(() => StaticCastHelper("TryCastOrNull"));
 
         IL2CPP_RenderTypeName = new Lazy<IMethodDefOrRef>(() =>
         {

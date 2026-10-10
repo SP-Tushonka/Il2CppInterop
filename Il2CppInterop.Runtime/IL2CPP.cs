@@ -544,6 +544,20 @@ public static unsafe partial class IL2CPP
         return Il2CppObjectPool.Get<T>(objectPointer);
     }
 
+    /// <summary>
+    ///     Cast for unstripped code, where castclass becomes this. Null stays null like a C# cast
+    /// </summary>
+    /// <param name="value">Object to cast</param>
+    /// <returns>The object as T, null when it is null</returns>
+    public static T? CastOrNull<T>(Il2CppObjectBase? value) where T : class => value?.Cast<T>();
+
+    /// <summary>
+    ///     As cast for unstripped code, where isinst becomes this. Null stays null like a C# as cast
+    /// </summary>
+    /// <param name="value">Object to cast</param>
+    /// <returns>The object as T, null when it is null or not a T</returns>
+    public static T? TryCastOrNull<T>(Il2CppObjectBase? value) where T : class => value?.TryCast<T>();
+
     public static string RenderTypeName<T>(bool addRefMarker = false)
     {
         return RenderTypeName(typeof(T), addRefMarker);

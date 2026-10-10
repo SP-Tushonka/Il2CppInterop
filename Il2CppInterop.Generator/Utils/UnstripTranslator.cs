@@ -419,15 +419,15 @@ public static class UnstripTranslator
                 {
                     // Compilers use unbox.any for casting to generic parameter types.
                     // Castclass is only used for reference types.
-                    // Both can be translated to Il2CppObjectBase.Cast<T>().
+                    // Both translate to a Cast<T>() that, like the cast it replaces, lets null through.
                     var newInstruction = targetBuilder.Add(OpCodes.Call,
-                        imports.Module.DefaultImporter.ImportMethod(imports.Il2CppObjectBase_Cast.Value.MakeGenericInstanceMethod([targetType])));
+                        imports.Module.DefaultImporter.ImportMethod(imports.IL2CPP_CastOrNull.Value.MakeGenericInstanceMethod([targetType])));
                     instructionMap.Add(bodyInstruction, newInstruction);
                 }
                 else if (bodyInstruction.OpCode == OpCodes.Isinst && !targetType.IsValueType)
                 {
                     var newInstruction = targetBuilder.Add(OpCodes.Call,
-                        imports.Module.DefaultImporter.ImportMethod(imports.Il2CppObjectBase_TryCast.Value.MakeGenericInstanceMethod([targetType])));
+                        imports.Module.DefaultImporter.ImportMethod(imports.IL2CPP_TryCastOrNull.Value.MakeGenericInstanceMethod([targetType])));
                     instructionMap.Add(bodyInstruction, newInstruction);
                 }
                 else if (bodyInstruction.OpCode == OpCodes.Newarr)

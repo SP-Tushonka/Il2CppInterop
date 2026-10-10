@@ -139,9 +139,12 @@ public static class Pass80UnstripMethods
                         property.SetMethod = newMethod;
                     }
 
-                    var paramsMethod = unityMethod.IsConstructor && classConstructor ? null : context.CreateParamsMethod(unityMethod, newMethod, imports,
+                    // A params constructor chains to the restored one, unless that signature is taken already
+                    var paramsMethod = context.CreateParamsMethod(unityMethod, newMethod, imports,
                         type => ResolveTypeInNewAssemblies(context, type, imports));
-                    if (paramsMethod != null) processedType.NewType.Methods.Add(paramsMethod);
+                    if (paramsMethod != null && !(paramsMethod.IsConstructor && processedType.NewType.Methods.Any(existing => existing.IsConstructor && !existing.IsStatic
+                            && existing.Signature!.ParameterTypes.SequenceEqual(paramsMethod.Signature!.ParameterTypes, SignatureComparer.Default))))
+                        processedType.NewType.Methods.Add(paramsMethod);
 
                     methodsUnstripped++;
                 }

@@ -53,6 +53,10 @@ public static class Pass80UnstripMethods
                     }
 
                     var newAttributes = (unityMethod.Attributes & ~MethodAttributes.MemberAccessMask) | MethodAttributes.Public;
+                    // A virtual Finalize becomes the wrapper's CLR finalizer and runs the il2cpp object's destructor
+                    // whenever the wrapper is collected, so it stays a plain method like the native ones
+                    if (unityMethod.Name == "Finalize" && !unityMethod.IsStatic && unityMethod.Parameters.Count == 0)
+                        newAttributes &= ~(MethodAttributes.Virtual | MethodAttributes.NewSlot | MethodAttributes.Final);
                     var newMethod = new MethodDefinition(unityMethod.Name,
                         newAttributes,
                         MethodSignatureCreator.CreateMethodSignature(newAttributes, returnType, unityMethod.Signature.GenericParameterCount));

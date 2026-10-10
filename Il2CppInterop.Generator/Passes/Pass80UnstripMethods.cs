@@ -145,11 +145,33 @@ public static class Pass80UnstripMethods
 
                     methodsUnstripped++;
                 }
+
+                AddDisposable(processedType, unityType, imports);
             }
         }
 
         Logger.Instance.LogInformation("Restored {UnstrippedMethods} methods", methodsUnstripped);
         Logger.Instance.LogInformation("Failed to restore {IgnoredMethods} methods", methodsIgnored);
+    }
+
+    /// <summary>
+    ///     Let a type rebuilt whole keep Unity's IDisposable, so C# using works on it (GUILayout scopes). Only once its
+    ///     restored Dispose() exists, an interface without its method would stop the type from loading
+    /// </summary>
+    private static void AddDisposable(TypeRewriteContext processedType, TypeDefinition unityType, RuntimeAssemblyReferences imports)
+    {
+        var type = processedType.NewType;
+        if (processedType.OriginalType != null || type.IsInterface
+            || !unityType.Interfaces.Any(implementation => implementation.Interface?.FullName == "System.IDisposable")
+            || type.Interfaces.Any(implementation => implementation.Interface?.FullName == "System.IDisposable"))
+            return;
+
+        var dispose = type.Methods.FirstOrDefault(method => method.Name == "Dispose" && !method.IsStatic && method.IsPublic && method.IsVirtual
+            && method.Parameters.Count == 0 && method.Signature!.ReturnType.ElementType == ElementType.Void);
+        if (dispose == null)
+            return;
+
+        type.Interfaces.Add(new InterfaceImplementation(imports.Module.ImportCorlibReference("System.IDisposable").ToTypeDefOrRef()));
     }
 
     private static bool IsDelegate(TypeDefinition type)

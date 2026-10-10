@@ -37,6 +37,10 @@ public class GeneratorOptions
     // SPT addition, UnityEngine attribute classes get a C# attribute twin so injected classes can declare them
     public bool MirrorAttributes { get; set; } = true;
 
+    // SPT addition, methods taking il2cpp delegates, types or enumerators get extensions taking the managed ones, so
+    // lambdas, typeof and C# iterators fit
+    public bool ArgumentExtensions { get; set; } = true;
+
     public PrefixMode Il2CppPrefixMode { get; set; } = PrefixMode.OptIn;
     public HashSet<string> NamespacesAndAssembliesToPrefix { get; } =
         new() { "System", "mscorlib", "Microsoft", "Mono", "I18N" };

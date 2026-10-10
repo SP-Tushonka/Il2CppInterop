@@ -129,7 +129,7 @@ public static class PassSptNullableHelpers
         return method;
     }
 
-    private static void MarkExtensionAssembly(AssemblyRewriteContext assemblyContext)
+    internal static void MarkExtensionAssembly(AssemblyRewriteContext assemblyContext)
     {
         var assembly = assemblyContext.NewAssembly;
         var imports = assemblyContext.Imports;

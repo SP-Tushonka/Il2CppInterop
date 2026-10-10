@@ -61,7 +61,7 @@ public static class PassSptEvents
     }
 
     // The System delegate type and the conversion Pass60 generated for an il2cpp delegate type, null for anything else
-    private static (TypeSignature SystemType, IMethodDefOrRef Conversion)? FindConversion(RewriteGlobalContext context, ModuleDefinition module, TypeSignature parameterType)
+    internal static (TypeSignature SystemType, IMethodDefOrRef Conversion)? FindConversion(RewriteGlobalContext context, ModuleDefinition module, TypeSignature parameterType)
     {
         GenericInstanceTypeSignature? instance = null;
         TypeDefinition? definition;
@@ -103,7 +103,8 @@ public static class PassSptEvents
     {
         try
         {
-            return context.GetContextForNewType(definition).OriginalType.BaseType?.FullName == "System.MulticastDelegate";
+            // System types have no context, types the generator made itself have no original
+            return context.GetContextForNewType(definition)?.OriginalType?.BaseType?.FullName == "System.MulticastDelegate";
         }
         catch (KeyNotFoundException)
         {

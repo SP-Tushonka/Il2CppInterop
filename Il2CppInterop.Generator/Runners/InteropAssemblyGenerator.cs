@@ -182,6 +182,14 @@ internal class InteropAssemblyGeneratorRunner : IRunner
             PassSptEvents.DoPass(rewriteContext);
         }
 
+        // Before unstripping, so a twin only mirrors constructors the game still has
+        using (new TimingCookie("Mirroring attributes"))
+        {
+            PassSptMirrorAttributes.DoPass(rewriteContext);
+        }
+
+        Logger.Instance.LogInformation("{MirroredCount} attribute classes mirrored", PassSptMirrorAttributes.MirroredCount);
+
         if (options.UnityBaseLibsDir != null)
         {
             using (new TimingCookie("Unstripping types"))

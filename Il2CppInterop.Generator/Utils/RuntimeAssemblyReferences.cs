@@ -100,6 +100,7 @@ public class RuntimeAssemblyReferences
     public TypeSignature Il2CppException { get; private set; }
 #nullable enable
     private TypeSignature ResolveType(string typeName)
+    public TypeSignature Il2CppMirroredAttribute { get; private set; }
     {
         return allTypes[typeName];
     }
@@ -155,6 +156,8 @@ public class RuntimeAssemblyReferences
 
         allTypes["Il2CppInterop.Runtime.InteropTypes.Il2CppObjectBase"] = Il2CppObjectBase;
         allTypes["Il2CppInterop.Runtime.InteropTypes.IIl2CppObjectBase"] = IIl2CppObjectBase;
+        Il2CppMirroredAttribute = new TypeReference(Module, assemblyRef, "Il2CppInterop.Runtime.Attributes", "Il2CppMirroredAttribute").ToTypeSignature();
+
         allTypes["Il2CppInterop.Runtime.Runtime.Il2CppObjectPool"] = Il2CppObjectPool;
         allTypes["Il2CppInterop.Runtime.InteropTypes.Arrays.Il2CppArrayBase"] = nonGenericIl2CppArrayBase;
         allTypes["Il2CppInterop.Runtime.InteropTypes.Arrays.Il2CppArrayBase<T>"] = genericIl2CppArrayBase;

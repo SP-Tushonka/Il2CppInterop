@@ -596,6 +596,8 @@ public static unsafe partial class ClassInjector
         Il2CppClassPointerStore.SetNativeClassPointer(type, classPointer.Pointer);
 
         InjectorHelpers.AddTypeToLookup(type, classPointer.Pointer);
+        InjectedScriptNames.EnsurePatched();
+        CustomAttributeSupport.Register(type, classPointer.Pointer);
 
         if (options.LogSuccess)
             Logger.Instance.LogInformation("Registered mono type {Type} in il2cpp domain", type);

@@ -34,6 +34,9 @@ public class GeneratorOptions
     // SPT addition, il2cpp events become C# events, a same named backing field property moves to <Name>Field
     public bool GenerateEvents { get; set; } = true;
 
+    // SPT addition, UnityEngine attribute classes get a C# attribute twin so injected classes can declare them
+    public bool MirrorAttributes { get; set; } = true;
+
     public PrefixMode Il2CppPrefixMode { get; set; } = PrefixMode.OptIn;
     public HashSet<string> NamespacesAndAssembliesToPrefix { get; } =
         new() { "System", "mscorlib", "Microsoft", "Mono", "I18N" };

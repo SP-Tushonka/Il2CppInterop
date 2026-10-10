@@ -50,6 +50,14 @@ public static class Il2CppType
     public static Type From(System.Type type, bool throwOnFailure)
     {
         var pointer = Il2CppClassPointerStore.GetNativeClassPointer(type);
+
+        // Only where an unregistered class used to throw, a non throwing call may be a plugin checking before it registers
+        if (pointer == IntPtr.Zero && throwOnFailure)
+        {
+            Injection.ClassInjector.RegisterOnFirstUse(type);
+            pointer = Il2CppClassPointerStore.GetNativeClassPointer(type);
+        }
+
         return TypeFromPointerInternal(pointer, type.Name, throwOnFailure);
     }
 
@@ -74,6 +82,12 @@ public static class Il2CppType
     public static Type Of<T>(bool throwOnFailure)
     {
         var classPointer = Il2CppClassPointerStore<T>.NativeClassPtr;
+        if (classPointer == IntPtr.Zero && throwOnFailure)
+        {
+            Injection.ClassInjector.RegisterOnFirstUse(typeof(T));
+            classPointer = Il2CppClassPointerStore<T>.NativeClassPtr;
+        }
+
         return TypeFromPointerInternal(classPointer, typeof(T).Name, throwOnFailure);
     }
 }

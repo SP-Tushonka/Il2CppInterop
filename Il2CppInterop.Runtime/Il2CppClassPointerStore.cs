@@ -22,6 +22,22 @@ public static class Il2CppClassPointerStore
         return ourPointerReaders.GetOrAdd(type, static key => CreatePointerReader(key))();
     }
 
+    /// <summary>
+    ///     Class pointer for a generic argument of generated code. A class a plugin never registered is registered here,
+    ///     where it used to give the generic instantiation a null class
+    /// </summary>
+    /// <typeparam name="T">Generic argument</typeparam>
+    /// <returns>Class pointer, zero when the type cannot be registered</returns>
+    public static IntPtr GenericArgumentPointer<T>()
+    {
+        var pointer = Il2CppClassPointerStore<T>.NativeClassPtr;
+        if (pointer != IntPtr.Zero)
+            return pointer;
+
+        Injection.ClassInjector.RegisterOnFirstUse(typeof(T));
+        return Il2CppClassPointerStore<T>.NativeClassPtr;
+    }
+
     private static Func<IntPtr> CreatePointerReader(Type type)
     {
         var field = typeof(Il2CppClassPointerStore<>)

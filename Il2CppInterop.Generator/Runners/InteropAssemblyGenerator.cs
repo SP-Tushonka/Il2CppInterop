@@ -226,6 +226,7 @@ internal class InteropAssemblyGeneratorRunner : IRunner
         using (new TimingCookie("Creating argument extensions"))
         {
             PassSptArgumentExtensions.DoPass(rewriteContext);
+            PassSptGenericArgumentRegistration.DoPass(rewriteContext);
         }
 
         // Breaks .net runtime

@@ -9,6 +9,7 @@ using System.Runtime.CompilerServices;
 using System.Runtime.InteropServices;
 using System.Text;
 using Il2CppInterop.Common;
+using Il2CppInterop.Common.Attributes;
 using Il2CppInterop.Runtime.Attributes;
 using Il2CppInterop.Runtime.InteropTypes;
 using Il2CppInterop.Runtime.InteropTypes.Arrays;
@@ -90,6 +91,10 @@ public static unsafe partial class ClassInjector
 
     public static IntPtr DerivedConstructorPointer<T>()
     {
+        // new on an unregistered class used to allocate from a null class
+        if (Il2CppClassPointerStore<T>.NativeClassPtr == IntPtr.Zero)
+            RegisterOnFirstUse(typeof(T));
+
         return IL2CPP.il2cpp_object_new(Il2CppClassPointerStore<T>
             .NativeClassPtr); // todo: consider calling base constructor
     }
@@ -169,6 +174,7 @@ public static unsafe partial class ClassInjector
 
     public static void RegisterTypeInIl2Cpp(Type type, RegisterTypeOptions options)
     {
+        t_RegistrationDepth++;
         try
         {
             RegisterTypeInIl2CppInternal(type, options);
@@ -182,6 +188,49 @@ public static unsafe partial class ClassInjector
 
             throw new Exception($"Injecting {type?.FullName} into il2cpp failed: {exception.Message}", exception);
         }
+        finally
+        {
+            t_RegistrationDepth--;
+        }
+    }
+
+    // Inside a registration the class is still being built, registering it on first use there would drop the caller's options
+    [ThreadStatic]
+    private static int t_RegistrationDepth;
+
+    /// <summary>
+    ///     Register a managed subclass where using it unregistered used to fail, so AddComponent and new work without an
+    ///     explicit registration like on Mono. Generated wrappers whose class the game lacks are left alone
+    /// </summary>
+    /// <param name="type">Type whose class pointer is still unset</param>
+    internal static void RegisterOnFirstUse(Type type)
+    {
+        if (t_RegistrationDepth > 0 || !type.IsClass || type.IsGenericType || !typeof(Il2CppObjectBase).IsAssignableFrom(type) || IsGeneratedType(type))
+            return;
+
+        try
+        {
+            RegisterTypeInIl2Cpp(type);
+        }
+        catch (Exception exception)
+        {
+            // Thrown from a class constructor the failure would stick to the type for the rest of the session
+            Logger.Instance.LogWarning("{Type} could not be registered on first use, register it with ClassInjector: {Exception}", type, exception);
+        }
+    }
+
+    private static bool IsGeneratedType(Type type)
+    {
+        if (type.IsDefined(typeof(OriginalNameAttribute), false) || type.IsDefined(typeof(ObfuscatedNameAttribute), false))
+            return true;
+
+        foreach (var field in type.GetFields(BindingFlags.Static | BindingFlags.NonPublic | BindingFlags.DeclaredOnly))
+        {
+            if (field.Name.StartsWith("NativeMethodInfoPtr_", StringComparison.Ordinal) || field.Name.StartsWith("NativeFieldInfoPtr_", StringComparison.Ordinal))
+                return true;
+        }
+
+        return false;
     }
 
     private static void RegisterTypeInIl2CppInternal(Type type, RegisterTypeOptions options)

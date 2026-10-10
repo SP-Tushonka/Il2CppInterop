@@ -41,5 +41,6 @@ public sealed class Il2CppInteropRuntime : BaseHost
     {
         UnityVersionHandler.RecalculateHandlers();
         base.Start();
+        ManagedReferenceRoots.Install();
     }
 }

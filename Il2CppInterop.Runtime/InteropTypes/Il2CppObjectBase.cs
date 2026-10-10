@@ -67,6 +67,7 @@ public partial class Il2CppObjectBase : IIl2CppObjectBase
 
         myGcHandle = IL2CPP.il2cpp_gchandle_new(objHdl, false);
         myPointer = objHdl;
+        Il2CppObjectPool.Register(this, objHdl);
     }
 
     public T Cast<T>() where T : class

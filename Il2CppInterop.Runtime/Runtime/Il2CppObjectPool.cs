@@ -1,4 +1,4 @@
-﻿using System;
+using System;
 using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.Runtime.CompilerServices;
@@ -13,10 +13,53 @@ public static class Il2CppObjectPool
 
     private static readonly ConcurrentDictionary<IntPtr, WeakReference<Il2CppObjectBase>> s_cache = new();
 
+    // Wrappers that lost their slot to a better one while still alive, still counted when the engine unloads assets
+    private static readonly ConcurrentDictionary<WeakReference<Il2CppObjectBase>, IntPtr> s_displaced = new();
+
     // A finalizer can run after a newer wrapper took the slot, so it only removes the entry it put there
     internal static void Remove(IntPtr ptr, WeakReference<Il2CppObjectBase> entry)
     {
-        s_cache.TryRemove(KeyValuePair.Create(ptr, entry));
+        if (!s_cache.TryRemove(KeyValuePair.Create(ptr, entry)))
+            s_displaced.TryRemove(entry, out _);
+    }
+
+    /// <summary>
+    ///     Give a new wrapper the object's slot unless a live wrapper holds it. Wrappers a mod creates with new are
+    ///     pooled too, so a later lookup returns the same instance like Mono does
+    /// </summary>
+    /// <param name="wrapper">Wrapper that just took its GC handle</param>
+    /// <param name="ptr">Object it wraps</param>
+    internal static void Register(Il2CppObjectBase wrapper, IntPtr ptr)
+    {
+        // A struct box is made per call and has no identity to keep
+        if (DisableCaching || wrapper is Il2CppSystem.ValueType)
+            return;
+
+        if (s_cache.TryGetValue(ptr, out var reference) && reference.TryGetTarget(out _))
+            return;
+
+        var entry = new WeakReference<Il2CppObjectBase>(wrapper);
+        s_cache[ptr] = entry;
+        wrapper.poolEntry = entry;
+    }
+
+    /// <summary>
+    ///     Add every object a live wrapper holds
+    /// </summary>
+    /// <param name="pointers">List to add the objects to</param>
+    internal static void CollectLive(List<IntPtr> pointers)
+    {
+        foreach (var pair in s_cache)
+        {
+            if (pair.Value.TryGetTarget(out _))
+                pointers.Add(pair.Key);
+        }
+
+        foreach (var pair in s_displaced)
+        {
+            if (pair.Key.TryGetTarget(out _))
+                pointers.Add(pair.Value);
+        }
     }
 
     public static T Get<T>(IntPtr ptr)
@@ -70,7 +113,14 @@ public static class Il2CppObjectPool
     private static T Cache<T>(IntPtr ptr, T newObj)
     {
         var il2CppObjectBase = Unsafe.As<T, Il2CppObjectBase>(ref newObj);
+
+        // A wrapper registers itself when it takes its handle, an empty slot is filled then
+        if (il2CppObjectBase.poolEntry != null)
+            return newObj;
+
         var entry = new WeakReference<Il2CppObjectBase>(il2CppObjectBase);
+        if (s_cache.TryGetValue(ptr, out var displaced) && displaced.TryGetTarget(out _))
+            s_displaced[displaced] = ptr;
         s_cache[ptr] = entry;
         il2CppObjectBase.poolEntry = entry;
         return newObj;

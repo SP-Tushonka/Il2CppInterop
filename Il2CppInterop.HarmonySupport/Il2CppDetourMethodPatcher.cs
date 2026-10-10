@@ -4,6 +4,7 @@ using System.Runtime.InteropServices;
 using HarmonyLib;
 using HarmonyLib.Public.Patching;
 using Il2CppInterop.Common;
+using Il2CppInterop.Common.Attributes;
 using Il2CppInterop.Runtime;
 using Il2CppInterop.Runtime.Injection;
 using Il2CppInterop.Runtime.InteropTypes;
@@ -112,6 +113,7 @@ internal unsafe class Il2CppDetourMethodPatcher : MethodPatcher
             originalNativeMethodInfo =
                 UnityVersionHandler.Wrap((Il2CppMethodInfo*)(IntPtr)methodField.GetValue(null));
             SharedBodyCheck.Report(Original, originalNativeMethodInfo.MethodPointer);
+            WarnIfInlined(originalNativeMethodInfo.MethodPointer);
 
             // Create a modified native MethodInfo struct, that will point towards the trampoline
             modifiedNativeMethodInfo = UnityVersionHandler.NewMethod();
@@ -439,6 +441,51 @@ internal unsafe class Il2CppDetourMethodPatcher : MethodPatcher
         il.Emit(OpCodes.Sizeof, typeof(void*));
         il.Emit(OpCodes.Mul);
         il.Emit(OpCodes.Add);
+    }
+
+    /// <summary>
+    ///     Warn when the target is a small leaf function the game never calls directly. The compiler inlines those into
+    ///     their callers, so the game's own calls never reach the patch and only calls through the interop do
+    /// </summary>
+    /// <param name="body">Native body of the target</param>
+    private void WarnIfInlined(IntPtr body)
+    {
+        // Virtual and interface calls go through the vtable and are not counted
+        if (Original is not MethodInfo method || method.IsVirtual || method.IsAbstract || IsEngineMessage(method))
+            return;
+
+        var callers = method.GetCustomAttribute<CallerCountAttribute>();
+        if (callers == null || callers.Count != 0)
+            return;
+
+        // Delegates and native callbacks reach a method without a direct call too, those are larger functions with
+        // unwind data. Only a leaf function has none, and that is what gets inlined into every caller
+        if (!OperatingSystem.IsWindows() || RtlLookupFunctionEntry((ulong)body, out _, IntPtr.Zero) != IntPtr.Zero)
+            return;
+
+        Logger.Instance.LogWarning(
+            "{Method} is a small function the game never calls directly, so the game has most likely inlined it. Its own calls then skip this patch and only calls through the interop reach it, patch the calling method instead",
+            Original.FullDescription());
+    }
+
+    [DllImport("kernel32.dll")]
+    private static extern IntPtr RtlLookupFunctionEntry(ulong controlPc, out ulong imageBase, IntPtr historyTable);
+
+    private static readonly HashSet<string> EngineMessages = ["Awake", "Start", "Update", "LateUpdate", "FixedUpdate", "Reset"];
+
+    // Unity calls these by name through reflection, so they never have a direct caller
+    private static bool IsEngineMessage(MethodInfo method)
+    {
+        if (!EngineMessages.Contains(method.Name) && !method.Name.StartsWith("On", StringComparison.Ordinal))
+            return false;
+
+        for (var type = method.DeclaringType; type != null; type = type.BaseType)
+        {
+            if (type.FullName is "UnityEngine.MonoBehaviour" or "UnityEngine.ScriptableObject" or "UnityEngine.StateMachineBehaviour")
+                return true;
+        }
+
+        return false;
     }
 
     private static void ReportException(Exception ex) =>

@@ -189,6 +189,18 @@ internal unsafe class Il2CppDetourMethodPatcher : MethodPatcher
 
         cursor.Goto(0);
 
+        // A class constructor wrapper starts with this(il2cpp_object_new(classPtr)), which allocates the object a
+        // managed `new` constructs. Here `this` is the object the game is already constructing, so that allocation
+        // would run the native constructor on a new object and leave the game's one unconstructed
+        if (Original.IsConstructor && !Original.IsStatic && Original.DeclaringType is { IsValueType: false } &&
+            cursor.TryGotoNext(x => x.MatchLdarg(0),
+                x => x.MatchLdsfld(out _),
+                x => x.MatchCall(typeof(IL2CPP), nameof(IL2CPP.il2cpp_object_new)),
+                x => x.MatchCall(out var chained) && chained.Name == ".ctor"))
+            cursor.RemoveRange(4);
+
+        cursor.Goto(0);
+
         // Remove the virtual lookup. It would resolve back to the detoured method and recurse
         if (cursor.TryGotoNext(x => x.MatchLdarg(0),
                 x => x.MatchCall(typeof(IL2CPP),

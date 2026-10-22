@@ -344,6 +344,17 @@ public static class UnstripTranslator
                     continue;
                 }
 
+                // A string pinned by a rebuilt method is a CLR string, so its characters start at the CLR's offset.
+                // IL2CPP's offset points past the start of the text
+                if (methodArg.DeclaringType?.FullName == "System.Runtime.CompilerServices.RuntimeHelpers" && methodArg.Name == "get_OffsetToStringData"
+                    && methodArg.Signature is { HasThis: false })
+                {
+                    var clrOffset = ReferenceCreator.CreateStaticMethodReference("get_OffsetToStringData", imports.Module.Int(),
+                        imports.Module.ImportCorlibReference("System.Runtime.CompilerServices.RuntimeHelpers").ToTypeDefOrRef());
+                    instructionMap.Add(bodyInstruction, targetBuilder.Add(OpCodes.Call, imports.Module.DefaultImporter.ImportMethod(clrOffset)));
+                    continue;
+                }
+
                 // A plain managed class is a CLR object, so its finalizer bookkeeping belongs to the CLR GC
                 if (managedType && methodArg.DeclaringType?.FullName == "System.GC" && methodArg.Name?.Value is "SuppressFinalize" or "ReRegisterForFinalize" or "KeepAlive"
                     && methodArg.Signature is { HasThis: false } && methodArg.Signature.ParameterTypes.Count == 1)

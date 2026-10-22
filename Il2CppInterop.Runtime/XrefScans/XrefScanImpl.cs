@@ -33,7 +33,10 @@ internal class XrefScanImpl : IXrefScannerImpl
     public bool XrefGlobalClassFilter(IntPtr movTarget)
     {
         var valueAtMov = (IntPtr)Marshal.ReadInt64(movTarget);
-        if (valueAtMov != IntPtr.Zero)
+        // Since Unity 2020.2 a metadata slot holds an encoded token until its method first runs and resolves it,
+        // (usage << 29) | (index << 1) | 1. Real pointers are never odd, and reading through a token is a fatal
+        // access violation
+        if (valueAtMov != IntPtr.Zero && ((long)valueAtMov & 1) == 0)
         {
             var targetClass = (IntPtr)Marshal.ReadInt64(valueAtMov);
             return targetClass == Il2CppClassPointerStore<string>.NativeClassPtr ||

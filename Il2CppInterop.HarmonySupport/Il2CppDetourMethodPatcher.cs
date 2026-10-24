@@ -456,12 +456,18 @@ internal unsafe class Il2CppDetourMethodPatcher : MethodPatcher
     }
 
     /// <summary>
-    ///     Warn when the target is a small leaf function the game never calls directly. The compiler inlines those into
-    ///     their callers, so the game's own calls never reach the patch and only calls through the interop do
+    ///     Warn when the game carries copies of the target inside other functions. Calls from those never reach the patch
     /// </summary>
     /// <param name="body">Native body of the target</param>
     private void WarnIfInlined(IntPtr body)
     {
+        var inlined = Original.GetCustomAttribute<InlinedIntoAttribute>();
+        if (inlined != null)
+        {
+            ReportInlined(inlined);
+            return;
+        }
+
         // Virtual and interface calls go through the vtable and are not counted
         if (Original is not MethodInfo method || method.IsVirtual || method.IsAbstract || IsEngineMessage(method))
             return;
@@ -478,6 +484,42 @@ internal unsafe class Il2CppDetourMethodPatcher : MethodPatcher
         Logger.Instance.LogWarning(
             "{Method} is a small function the game never calls directly, so the game has most likely inlined it. Its own calls then skip this patch and only calls through the interop reach it, patch the calling method instead",
             Original.FullDescription());
+    }
+
+    /// <summary>
+    ///     Log where the generator found inlined copies of the target
+    /// </summary>
+    /// <param name="inlined">The generator's findings for the target</param>
+    private void ReportInlined(InlinedIntoAttribute inlined)
+    {
+        var method = Original.FullDescription();
+        if (inlined.Count > 0)
+        {
+            var more = inlined.Count > inlined.Callers.Length ? $" and {inlined.Count - inlined.Callers.Length} more" : "";
+            var direct = inlined.DirectCalls > 0
+                ? $"The patch still runs for the {inlined.DirectCalls} direct calls."
+                : "Nothing calls it directly, so the patch only runs through the interop.";
+            Logger.Instance.LogWarning(
+                "{Method} is inlined into {Callers}{More}. Calls from those skip this patch. {Direct} Patch the listed functions to cover them",
+                method, string.Join(", ", inlined.Callers), more, direct);
+            return;
+        }
+
+        // Unity calls messages by name, a delegate or reflection reaches the method the same way
+        if (Original is MethodInfo info && IsEngineMessage(info))
+            return;
+
+        if (inlined.ForwardsTo != null)
+        {
+            Logger.Instance.LogWarning(
+                "{Method} is a small method the game never calls directly. Its callers inlined it and call {Target} instead, patch that unless a delegate or reflection reaches this method",
+                method, inlined.ForwardsTo);
+            return;
+        }
+
+        Logger.Instance.LogWarning(
+            "{Method} is a small method the game never calls directly. Its callers inlined it, patch them unless a delegate or reflection reaches this method",
+            method);
     }
 
     [DllImport("kernel32.dll")]

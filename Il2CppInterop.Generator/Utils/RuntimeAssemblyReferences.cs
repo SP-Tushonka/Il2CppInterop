@@ -80,6 +80,7 @@ public class RuntimeAssemblyReferences
     public Lazy<IMethodDefOrRef> ObfuscatedNameAttributector { get; private set; }
     public Lazy<IMethodDefOrRef> CallerCountAttributector { get; private set; }
     public Lazy<IMethodDefOrRef> CachedScanResultsAttributector { get; private set; }
+    public Lazy<IMethodDefOrRef> InlinedIntoAttributector { get; private set; }
     public Lazy<IMethodDefOrRef> Il2CppSystemDelegateCombine { get; private set; }
     public Lazy<IMethodDefOrRef> Il2CppSystemDelegateRemove { get; private set; }
     public Lazy<IMethodDefOrRef> Il2CppSystemRuntimeTypeHandleGetRuntimeTypeHandle { get; private set; }
@@ -581,6 +582,11 @@ public class RuntimeAssemblyReferences
         CachedScanResultsAttributector = new Lazy<IMethodDefOrRef>(() =>
             ReferenceCreator.CreateInstanceMethodReference(".ctor", Module.Void(),
                 Module.DefaultImporter.ImportType(typeof(CachedScanResultsAttribute))));
+
+        InlinedIntoAttributector = new Lazy<IMethodDefOrRef>(() =>
+            ReferenceCreator.CreateInstanceMethodReference(".ctor", Module.Void(),
+                Module.DefaultImporter.ImportType(typeof(InlinedIntoAttribute)), Module.String().MakeSzArrayType(),
+                Module.Int(), Module.Int(), Module.String()));
 
         Il2CppSystemDelegateCombine = new Lazy<IMethodDefOrRef>(() =>
             Module.DefaultImporter.ImportMethod(globalCtx.GetAssemblyByName("mscorlib").NewAssembly.ManifestModule!

@@ -241,6 +241,11 @@ internal class InteropAssemblyGeneratorRunner : IRunner
         //    Pass89GenerateForwarders.DoPass(rewriteContext);
         //}
 
+        using (new TimingCookie("Marking inlined methods"))
+        {
+            PassSptInlineMarks.DoPass(rewriteContext);
+        }
+
         using (new TimingCookie("Writing xref cache"))
         {
             Pass89GenerateMethodXrefCache.DoPass(rewriteContext, options);

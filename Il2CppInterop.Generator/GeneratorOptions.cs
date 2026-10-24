@@ -44,6 +44,9 @@ public class GeneratorOptions
     // SPT addition, an exact (int) constructor where an int argument would otherwise bind the (IntPtr) pointer one
     public bool IntConstructors { get; set; } = true;
 
+    // SPT addition, methods whose code the compiler copied into other functions get [InlinedInto] naming those functions
+    public bool InlineMarks { get; set; } = true;
+
     public PrefixMode Il2CppPrefixMode { get; set; } = PrefixMode.OptIn;
     public HashSet<string> NamespacesAndAssembliesToPrefix { get; } =
         new() { "System", "mscorlib", "Microsoft", "Mono", "I18N" };

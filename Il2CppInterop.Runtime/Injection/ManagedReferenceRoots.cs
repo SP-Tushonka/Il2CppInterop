@@ -84,7 +84,6 @@ internal static unsafe class ManagedReferenceRoots
 
         // Wrappers nothing references any more drop their handles, like the full collection Mono runs here
         GC.Collect();
-        GC.WaitForPendingFinalizers();
 
         s_Live.Clear();
         Il2CppObjectPool.CollectLive(s_Live);

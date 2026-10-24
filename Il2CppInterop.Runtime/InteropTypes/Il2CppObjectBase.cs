@@ -23,6 +23,10 @@ public partial class Il2CppObjectBase : IIl2CppObjectBase
 
     public Il2CppObjectBase(IntPtr pointer)
     {
+        // No object lives in the first 64 KB. A value there is an int that bound this constructor instead of a numeric one
+        if (pointer != IntPtr.Zero && (nuint)pointer < 0x10000)
+            throw new ArgumentException($"0x{pointer:X} is not an il2cpp object. An int passed to a {GetType()} constructor binds its pointer " +
+                                        "constructor, pass the intended type such as a float", nameof(pointer));
         CreateGCHandle(pointer);
     }
 

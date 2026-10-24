@@ -222,6 +222,12 @@ internal class InteropAssemblyGeneratorRunner : IRunner
             PassSptUnsealClasses.DoPass(rewriteContext);
         }
 
+        // After unstripping, so restored constructors are forwarded to as well
+        using (new TimingCookie("Creating int constructors"))
+        {
+            PassSptIntConstructors.DoPass(rewriteContext);
+        }
+
         // After unstripping, restored methods take these arguments too
         using (new TimingCookie("Creating argument extensions"))
         {

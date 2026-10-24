@@ -496,9 +496,12 @@ internal unsafe class Il2CppDetourMethodPatcher : MethodPatcher
         if (inlined.Count > 0)
         {
             var more = inlined.Count > inlined.Callers.Length ? $" and {inlined.Count - inlined.Callers.Length} more" : "";
+            var reachedIndirectly = Original.IsVirtual || Original is MethodInfo message && IsEngineMessage(message);
             var direct = inlined.DirectCalls > 0
                 ? $"The patch still runs for the {inlined.DirectCalls} direct calls."
-                : "Nothing calls it directly, so the patch only runs through the interop.";
+                : reachedIndirectly
+                    ? "The patch still runs for virtual calls and Unity messages."
+                    : "Nothing calls it directly, so the patch only runs through the interop.";
             Logger.Instance.LogWarning(
                 "{Method} is inlined into {Callers}{More}. Calls from those skip this patch. {Direct} Patch the listed functions to cover them",
                 method, string.Join(", ", inlined.Callers), more, direct);
